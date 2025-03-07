@@ -63,8 +63,9 @@ class NodeRegistry:
 
         @self.app.route("/register-node", methods=["POST"])
         def register_node():
+            print("Received Node Registration Request")
             data = request.json
-            print("✅ Received Node Data:", data)
+            print("Received Node Data:", data)
 
             # Validate received data
             required_keys = {"node_id", "node_name", "node_type", "public_key"}
@@ -88,7 +89,7 @@ class NodeRegistry:
         """Run the Flask application."""
         self.app.run(host=host, port=port)
 
-        if __name__ == "__main__":
-            registry = NodeRegistry()
-            registry.run()
+if __name__ == "__main__":
+    registry = NodeRegistry()
+    registry.run()
 
