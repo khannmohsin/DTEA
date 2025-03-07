@@ -88,3 +88,7 @@ class NodeRegistry:
         """Run the Flask application."""
         self.app.run(host=host, port=port)
 
+        if __name__ == "__main__":
+            registry = NodeRegistry()
+            registry.run()
+

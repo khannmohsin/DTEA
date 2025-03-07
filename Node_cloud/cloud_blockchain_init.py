@@ -6,7 +6,7 @@ from eth_keys import keys
 
 class BlockchainInit:
     def __init__(self):
-        self.root_path = "/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/"
+        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/"
         self.prefunded_account_file = os.path.join(self.root_path, "prefunded_keys.json")
         self.config_file = os.path.join(self.root_path, "qbftConfigFile.json")
         self.data_path = os.path.join(self.root_path, "data/")
@@ -254,4 +254,12 @@ class BlockchainInit:
             print("Error: Besu is not installed or not found in PATH.")
         except Exception as e:
             print(f"Unexpected error: {e}")
-    
+
+if __name__ == "__main__":
+    blockchain_init = BlockchainInit()
+    blockchain_init.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
+    blockchain_init.generate_keys()
+    blockchain_init.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json")
+    blockchain_init.update_genesis_file()
+    blockchain_init.update_extra_data_in_genesis()
+    blockchain_init.start_blockchain_node()
