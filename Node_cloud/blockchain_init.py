@@ -7,12 +7,15 @@ from eth_keys import keys
 class BlockchainInit:
     def __init__(self):
         self.root_path = "/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/"
+        self.prefunded_account_file = os.path.join(self.root_path, "prefunded_keys.json")
+        self.config_file = os.path.join(self.root_path, "qbftConfigFile.json")
         self.data_path = os.path.join(self.root_path, "data/")
         self.genesis_files_path = os.path.join(self.root_path, "genesis/")
         self.private_key = os.path.join(self.data_path, "key.priv")
         self.public_key = os.path.join(self.data_path, "key.pub")
         self.validator_addresses = os.path.join(self.genesis_files_path, "validator_address.json")
         self.genesis_file = os.path.join(self.genesis_files_path, "genesis.json")
+
         
     
     #---------------------Node Public and Private generation----------------------------
@@ -41,8 +44,6 @@ class BlockchainInit:
 
     #---------------------Create QBFT config file----------------------------
     def create_qbft_file(self, num_prefunded_accounts, num_validators):
-        PREFUNDED_ACCOUNT_FILE = "/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/prefunded_keys.json"
-        CONFIG_FILE = "/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/qbftConfigFile.json"
         CHAIN_ID = 1337
         BLOCK_PERIOD_SECONDS = 2
         EPOCH_LENGTH = 30000
@@ -81,17 +82,17 @@ class BlockchainInit:
         }
 
         # Save the configuration file
-        with open(CONFIG_FILE, "w") as f:
+        with open(self.config_file, "w") as f:
             json.dump(qbft_config, f, indent=4)
 
         # Save generated keys for later use
-        with open(PREFUNDED_ACCOUNT_FILE, "w") as f:
+        with open(self.prefunded_account_file, "w") as f:
             json.dump({
                 "prefunded_accounts": prefunded_accounts
             }, f, indent=4)
 
-        print(f"\n QBFT Configuration file generated successfully at location: `{CONFIG_FILE}` \n")
-        print(f"\n Prefunded account keys saved in:  `{PREFUNDED_ACCOUNT_FILE}`\n")
+        print(f"\n QBFT Configuration file generated successfully at location: `{self.config_file}` \n")
+        print(f"\n Prefunded account keys saved in:  `{self.prefunded_account_file}`\n")
 
     #---------------------Create genesis file from the QBFT config file----------------------------
     def create_genesis_file(self, qbft_config_path):
@@ -120,7 +121,7 @@ class BlockchainInit:
             last_line = result.stdout.strip().split("\n")[-1]  # Get last line
             cleaned_address = last_line[2:] if last_line.startswith("0x") else last_line  # Remove "0x" prefix
             
-            print(f"Extracted Node Address: {cleaned_address}")
+            print(f"Extracted Node Address: {cleaned_address}\n")
 
             # Load existing addresses from JSON file if it exists
             if os.path.exists(self.validator_addresses):
@@ -142,9 +143,9 @@ class BlockchainInit:
                 # Save updated address list to JSON file
                 with open(self.validator_addresses, "w") as file:
                     json.dump(addresses, file, indent=4)
-                print(f"Node address saved in `{self.validator_addresses}` as JSON")
+                print(f"Node address saved in `{self.validator_addresses}` as JSON\n")
             else:
-                print("Address already exists in JSON file. Skipping update.")
+                print("Address already exists in JSON file. Skipping update.\n")
 
             return cleaned_address
         else:
@@ -169,9 +170,9 @@ class BlockchainInit:
             )
 
             if encode_result.returncode == 0:
-                print(f"Encoded extraData saved in `{extra_data_file}`.")
+                print(f"Encoded extraData saved in `{extra_data_file}`\n")
             else:
-                print(f"Error encoding extraData: {encode_result.stderr}")
+                print(f"Error encoding extraData: {encode_result.stderr}\n")
                 return
 
             # Read the generated extraData
@@ -189,7 +190,7 @@ class BlockchainInit:
             with open(self.genesis_file, "w") as file:
                 json.dump(genesis_data, file, indent=4)
 
-            print(f"`extraData` updated in `{self.genesis_file}`.")
+            print(f"`extraData` updated in `{self.genesis_file}`\n")
 
 
     #---------------------Get the node address besides pub and private key----------------------------
@@ -222,28 +223,35 @@ class BlockchainInit:
 
     #---------------------Start the blockchain node----------------------------
     def start_blockchain_node(self):
-
-        # Run Besu as a subprocess
+        """Starts the Besu node using subprocess.Popen()"""
         try:
-
             print("Starting Besu node...")
 
-            subprocess.run(
-            ["besu", 
-             "--data-path=" + self.data_path,
-             "--node-private-key-file=" + self.private_key,
-             "--genesis-file=" + self.genesis_file,
-             "--rpc-http-enabled",
-             "--rpc-http-api=ETH,NET,QBFT",
-             "--host-allowlist=*",
-             "--rpc-http-cors-origins=all"],
-            capture_output=True,  # Capture stdout
-            text=True,  # Treat output as a string
-            check=False  # Do not raise exception on failure
-        )
+            process = subprocess.Popen(
+                ["besu",
+                "--data-path=" + self.data_path,
+                "--node-private-key-file=" + self.private_key,
+                "--genesis-file=" + self.genesis_file,
+                "--rpc-http-enabled",
+                "--rpc-http-api=ETH,NET,QBFT",
+                "--host-allowlist=*",
+                "--rpc-http-cors-origins=all"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            # Read output in real-time
+            for line in process.stdout:
+                print("[Besu Output]:", line.strip())
+
+            for line in process.stderr:
+                print("[Besu Error]:", line.strip())
+
+            process.wait()  # Wait for process to complete
 
         except FileNotFoundError:
             print("Error: Besu is not installed or not found in PATH.")
         except Exception as e:
-            print(f"Unexpected error: {e}")   
+            print(f"Unexpected error: {e}")
     

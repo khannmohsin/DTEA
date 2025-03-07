@@ -11,6 +11,9 @@ def run_blockchain():
     blockchain.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
     blockchain.generate_keys()
     blockchain.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/qbftConfigFile.json")
+    blockchain.update_genesis_file()
+    time.sleep(2)
+    blockchain.update_extra_data_in_genesis()
 
     # Open log file
     with open("blockchain.log", "a", buffering=1) as log_file:
@@ -39,20 +42,20 @@ def run_node_registry():
 
 if __name__ == "__main__":
 
-    blockchain = BlockchainInit()
-    blockchain.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
-    blockchain.generate_keys()
-    blockchain.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/qbftConfigFile.json")
-    blockchain.update_genesis_file()
-    time.sleep(2)
-    blockchain.update_extra_data_in_genesis()
-    blockchain.start_blockchain_node()
+    # blockchain = BlockchainInit()
+    # blockchain.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
+    # blockchain.generate_keys()
+    # blockchain.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode Projects/MyDisIoT Project/Node_cloud/qbftConfigFile.json")
+    # blockchain.update_genesis_file()
+    # time.sleep(2)
+    # blockchain.update_extra_data_in_genesis()
+    # blockchain.start_blockchain_node()
     # Start Blockchain (Besu) and Flask (Node Registry) in parallel
-    # blockchain_process = multiprocessing.Process(target=run_blockchain)
-    # flask_process = multiprocessing.Process(target=run_node_registry)
+    blockchain_process = multiprocessing.Process(target=run_blockchain)
+    flask_process = multiprocessing.Process(target=run_node_registry)
 
-    # blockchain_process.start()
-    # flask_process.start()
+    blockchain_process.start()
+    flask_process.start()
 
-    # blockchain_process.join()
-    # flask_process.join()
+    blockchain_process.join()
+    flask_process.join()

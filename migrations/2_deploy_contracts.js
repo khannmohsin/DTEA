@@ -1,5 +1,5 @@
-const FogNodeRegistry = artifacts.require("FogNodeRegistry");
+const NodeRegistry = artifacts.require("NodeRegistry");
 
-module.exports = function (deployer, network, accounts) {
-    deployer.deploy(FogNodeRegistry);
+module.exports = function (deployer) {
+  deployer.deploy(NodeRegistry);
 };

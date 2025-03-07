@@ -37,8 +37,8 @@ class Node:
 
         response = requests.post(f"{self.cloud_url}/register-node", json=data)
         if response.status_code == 200:
-            print(f"✅ {self.node_type.capitalize()} Node {self.node_id} Registered Successfully as '{self.node_name}'!")
-            print(f"🔑 Public Key Sent: {self.public_key}")
+            print(f"{self.node_type.capitalize()} Node {self.node_id} Registered Successfully as '{self.node_name}'!")
+            print(f"Public Key Sent: {self.public_key}")
         else:
-            print(f"❌ Error Registering {self.node_type.capitalize()} Node {self.node_id}: {response.json()}")
+            print(f"Error Registering {self.node_type.capitalize()} Node {self.node_id}: {response.json()}")
 

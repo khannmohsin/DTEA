@@ -1,0 +1,10 @@
+[Flask] Starting Node Registry API...
+ * Serving Flask app 'node_registration'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.73:5000
+[33mPress CTRL+C to quit[0m
+✅ Received Node Data: {'node_id': 'FN-002', 'node_name': 'FogDevice-002', 'node_type': 'fog', 'public_key': '0x65d304388e7ce026cd03a92c602c13153e96108112f09f364a270c6ab45190c03a592ec31b6846aa64a2e37c3663db1466c76c84193edd49a0a27d40bed4b397'}
+127.0.0.1 - - [06/Mar/2025 16:55:12] "POST /register-node HTTP/1.1" 200 -
