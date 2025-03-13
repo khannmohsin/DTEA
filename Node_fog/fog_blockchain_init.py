@@ -3,6 +3,7 @@ from eth_account import Account
 import subprocess
 import os
 from eth_keys import keys
+import sys
 
 class BlockchainInit:
     def __init__(self):
@@ -15,9 +16,22 @@ class BlockchainInit:
         self.public_key = os.path.join(self.data_path, "key.pub")
         self.validator_addresses = os.path.join(self.genesis_files_path, "validator_address.json")
         self.genesis_file = os.path.join(self.genesis_files_path, "genesis.json")
+        self.enode_file = os.path.join(self.data_path, "enode.txt") 
+        self.enode_address = self.load_enode_address()
 
         
-    
+    #---------------------Load Enode address---------------------------- 
+    def load_enode_address(self):
+        """Reads the enode address from the .txt file"""
+        if os.path.exists(self.enode_file):
+            with open(self.enode_file, "r") as file:
+                enode = file.read().strip()  # Read and remove any extra spaces/newlines
+                print(f"Loaded Enode Address: {enode}")  # Debugging
+                return enode
+        else:
+            print(f"Error: Enode file {self.enode_file} not found.")
+            return None
+        
     #---------------------Node Public and Private generation----------------------------
     def generate_keys(self):
         """Generates a new Ethereum account (private key and address)."""
@@ -259,7 +273,34 @@ class BlockchainInit:
 
 if __name__ == "__main__":
     blockchain_init = BlockchainInit()
-    blockchain_init.start_blockchain_node()
+    
+    if len(sys.argv) > 1:
+        method_name = sys.argv[1]
+        method_args = sys.argv[2:]  # Capture additional arguments (if any)
+
+        # Check if the method exists in the class
+        if hasattr(blockchain_init, method_name):
+            method = getattr(blockchain_init, method_name)
+
+            # Check if it's callable
+            if callable(method):
+                # Get function argument count (excluding `self`)
+                arg_count = method.__code__.co_argcount - 1  # Subtract 1 for `self`
+                
+                if len(method_args) == arg_count:
+                    # Call method dynamically with arguments (if required)
+                    method(*method_args)
+                elif arg_count == 0:
+                    # Call method without arguments
+                    method()
+                else:
+                    print(f"Error: Function '{method_name}' requires {arg_count} argument(s), but {len(method_args)} were given.")
+            else:
+                print(f"Error: '{method_name}' is not callable.")
+        else:
+            print(f"Error: Function '{method_name}' not found in BlockchainInit.")
+    else:
+        print("Usage: python blockchain_init.py <function_name> [arguments...]")
 
 
 

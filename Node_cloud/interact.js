@@ -5,7 +5,7 @@ const path = require('path');
 const { get } = require("http");
 const web3 = new Web3("http://127.0.0.1:8545"); // Besu JSON-RPC
 
-const contractAddress = "0xBFFfbA1524E330c3595FAE5802D4f157b1052275"; // Replace with your contract address
+const contractAddress = "0xfc19082A440e416D2744a22cf6965d90c8C2b0f9"; // Replace with your contract address
 // const account = "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22"; // Replace with your account address
 // const privateKey = "def5be7c19dd1d6794b33240d36fa33dea3338d6e473011f47a3282e171326cd"; // Replace with your private key ETH account 
 

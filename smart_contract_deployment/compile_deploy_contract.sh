@@ -8,7 +8,7 @@ MIGRATIONS_DIR="migrations"
 DEPLOY_SCRIPT="$MIGRATIONS_DIR/2_deploy_contracts.js"
 
 # Private key and RPC URL (Update these before running the script) of the ETH account
-PRIVATE_KEY="e1f272258d4ae19350e54db45178a7f23bc1ea441a49a9a1c0bd9c9e1912bbaa"  # ⚠️ Replace with actual private key
+PRIVATE_KEY="2a0ff0e95dbd2351eafc8fba63fcce14c1b9f26695000a974bd3f32d7a58b3c5"  # ⚠️ Replace with actual private key
 BESU_RPC_URL="http://127.0.0.1:8545"
 
 echo "Starting Smart Contract Deployment on Besu..."

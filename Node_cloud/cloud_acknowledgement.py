@@ -20,7 +20,7 @@ class CloudAcknowledgementSender:
         self.besu_rpc_url = besu_rpc_url
 
     def get_enode(self):
-        """Fetches the enode from the Besu blockchain."""
+        """Fetches the full enode URL from the Besu blockchain."""
         payload = {
             "jsonrpc": "2.0",
             "method": "admin_nodeInfo",
@@ -36,15 +36,16 @@ class CloudAcknowledgementSender:
             enode_url = data.get("result", {}).get("enode", "")
 
             if enode_url:
-                # Extract only the node ID (everything between 'enode://' and '@')
-                match = re.search(r"enode://([a-fA-F0-9]+)@", enode_url)
+                # Ensure enode URL follows correct format
+                match = re.match(r"enode://([a-fA-F0-9]+)@([\d\.]+):(\d+)", enode_url)
                 if match:
-                    return match.group(1)  # Return only the enode ID
+                    return enode_url  # Return the full enode URL
             return None
 
         except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching enode: {e}")
+            print(f"Error fetching enode: {e}")
             return None
+        
 
     def send_acknowledgment(self, node_id):
         """Sends acknowledgment, enode, and files to the Fog Node."""

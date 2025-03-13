@@ -1,1 +1,26 @@
-{}
+{
+    "FOG-006": {
+        "node_name": "FogDevice-006",
+        "node_type": "Fog",
+        "public_key": "0xb4ed909f672c36e8abe3289e8db418859372585a5e4a5ec01c6395d4988731d09a9cb6f623ce4e855fa4f60da9a944eacea69cb5fb6a776b4e671e012a2dee00",
+        "address": "ce2fd101c8fd09c4b2b669c75c91dda09e6d1238"
+    },
+    "FOG-001": {
+        "node_name": "FogDevice-001",
+        "node_type": "Fog",
+        "public_key": "0x814a5b254204e5bdda3d91250333d1628d8c37791529b7b35ff1959f14ee33cb3e38c10dee322e4e76219bcc54b769fc45d14c6cb2540d26fb9fbf32fd01c11a",
+        "address": "e39035c0c9ae42348fdd6325f12787c862a78daf"
+    },
+    "Node-1": {
+        "node_name": "Node_Fog",
+        "node_type": "Fog",
+        "public_key": "0x814a5b254204e5bdda3d91250333d1628d8c37791529b7b35ff1959f14ee33cb3e38c10dee322e4e76219bcc54b769fc45d14c6cb2540d26fb9fbf32fd01c11a",
+        "address": "e39035c0c9ae42348fdd6325f12787c862a78daf"
+    },
+    "register": {
+        "node_name": "FOG-001",
+        "node_type": "FOGDevice-001",
+        "public_key": "0x814a5b254204e5bdda3d91250333d1628d8c37791529b7b35ff1959f14ee33cb3e38c10dee322e4e76219bcc54b769fc45d14c6cb2540d26fb9fbf32fd01c11a",
+        "address": "e39035c0c9ae42348fdd6325f12787c862a78daf"
+    }
+}

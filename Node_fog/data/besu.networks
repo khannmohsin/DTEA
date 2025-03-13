@@ -1,0 +1,4 @@
+#This file contains the IP Addresses (global and local) used by the running instance of Besu. This file will be deleted after the node is shutdown.
+#Thu Mar 13 18:52:31 CET 2025
+global-ip=127.0.0.1
+local-ip=127.0.0.1

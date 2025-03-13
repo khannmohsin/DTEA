@@ -45,6 +45,9 @@ class BlockchainInit:
 
     #---------------------Create QBFT config file----------------------------
     def create_qbft_file(self, num_prefunded_accounts, num_validators):
+        num_prefunded_accounts = int(num_prefunded_accounts)  # Ensure it's an integer
+        num_validators = int(num_validators) 
+        
         CHAIN_ID = 1337
         BLOCK_PERIOD_SECONDS = 2
         EPOCH_LENGTH = 30000
@@ -261,12 +264,37 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         method_name = sys.argv[1]
-        
+        method_args = sys.argv[2:]  # Capture additional arguments (if any)
+
         # Check if the method exists in the class
         if hasattr(blockchain_init, method_name):
             method = getattr(blockchain_init, method_name)
-            method()  # Call the function dynamically
+
+            # Check if it's callable
+            if callable(method):
+                # Get function argument count (excluding `self`)
+                arg_count = method.__code__.co_argcount - 1  # Subtract 1 for `self`
+                
+                if len(method_args) == arg_count:
+                    # Call method dynamically with arguments (if required)
+                    method(*method_args)
+                elif arg_count == 0:
+                    # Call method without arguments
+                    method()
+                else:
+                    print(f"Error: Function '{method_name}' requires {arg_count} argument(s), but {len(method_args)} were given.")
+            else:
+                print(f"Error: '{method_name}' is not callable.")
         else:
-            print(f"❌ Error: Function '{method_name}' not found in BlockchainInit")
+            print(f"Error: Function '{method_name}' not found in BlockchainInit.")
     else:
-        print("⚠️ Usage: python blockchain_init.py <function_name>")
+        print("Usage: python blockchain_init.py <function_name> [arguments...]")
+
+
+    # blockchain_init = BlockchainInit()
+    # blockchain_init.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
+    # blockchain_init.generate_keys()
+    # blockchain_init.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json")
+    # blockchain_init.update_genesis_file()
+    # blockchain_init.update_extra_data_in_genesis()
+    # blockchain_init.start_blockchain_node()

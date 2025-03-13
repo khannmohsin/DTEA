@@ -1,8 +1,9 @@
+#!/usr/bin/env python3
+
 import requests
 import os
 import subprocess
-from fog_blockchain_init import BlockchainInit
-from fog_node_registration import NodeRegistry
+import sys
 
 class Node:
     def __init__(self, node_id, node_name, node_type, cloud_url, key_path):
@@ -65,13 +66,32 @@ class Node:
 
 # Example: Register a Fog Node
 if __name__ == "__main__":
-    cloud_api_url = "http://127.0.0.1:5000"  # Update with actual Cloud Node IP
-    key_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
-    generate_keys = BlockchainInit()
-    gen_keys = generate_keys.generate_keys()
-    # Example: Register a Fog Node
-    fog_node = Node(node_id="FOG-05", node_name="FogDevice-05", node_type="Fog", cloud_url=cloud_api_url, key_path=key_path)
-    fog_node.register_with_cloud()
+    if len(sys.argv) > 1:
+        command = sys.argv[1]
+
+        if command == "register":
+            if len(sys.argv) != 7:
+                print("Usage: python fog_node.py register <node_id> <node_name> <node_type> <cloud_url> <key_path>")
+                sys.exit(1)
+
+            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node.register_with_cloud()
+
+        elif command == "get_address":
+            node = Node("dummy_id", "dummy_name", "dummy_type", "http://127.0.0.1:5000", "/path/to/key.pub")
+            print(node.get_address())
+
+        else:
+            print(f"Error: Unknown command '{command}'")
+    else:
+        print("Usage: python fog_node.py <command> [arguments...]")
+
+    # cloud_api_url = "http://127.0.0.1:5000"  # Update with actual Cloud Node IP
+    # key_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+    # # Example: Register a Fog Node
+    # fog_node = Node(node_id="FOG-001", node_name="FogDevice-001", node_type="Fog", cloud_url=cloud_api_url, key_path=key_path)
+    # fog_node.register_with_cloud()
 
 
 
