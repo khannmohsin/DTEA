@@ -11,13 +11,26 @@ contract NodeRegistry {
         string publicKey;
         bool isRegistered;
         string capabilityToken;
+        address registeredBy; // ✅ Ethereum address of the node owner
     }
 
     mapping(string => IoTNode) public iotNodes;
     
-    event NodeRegistered(string indexed nodeId, string nodeName, NodeType nodeType, string publicKey, string capabilityToken);
+    event NodeRegistered(
+        string indexed nodeId,
+        string nodeName,
+        NodeType nodeType,
+        string publicKey,
+        string capabilityToken,
+        address registeredBy // ✅ Include address in the event
+    );
 
-    function registerNode(string memory nodeId, string memory nodeName, string memory nodeTypeStr, string memory publicKey) public {
+    function registerNode(
+        string memory nodeId,
+        string memory nodeName,
+        string memory nodeTypeStr,
+        string memory publicKey
+    ) public {
         require(!iotNodes[nodeId].isRegistered, "Node already registered!");
 
         NodeType nodeType = getNodeType(nodeTypeStr);
@@ -30,20 +43,23 @@ contract NodeRegistry {
             nodeType: nodeType,
             publicKey: publicKey,
             isRegistered: true,
-            capabilityToken: capabilityToken
+            capabilityToken: capabilityToken,
+            registeredBy: msg.sender // ✅ Save sender's address
         });
 
-        emit NodeRegistered(nodeId, nodeName, nodeType, publicKey, capabilityToken);
+        emit NodeRegistered(nodeId, nodeName, nodeType, publicKey, capabilityToken, msg.sender);
     }
 
     function isNodeRegistered(string memory nodeId) public view returns (bool) {
         return iotNodes[nodeId].isRegistered;
     }
 
-    function getNodeDetails(string memory nodeId) public view returns (string memory, NodeType, string memory, bool, string memory) {
+    function getNodeDetails(string memory nodeId) 
+        public view returns (string memory, NodeType, string memory, bool, string memory, address) 
+    {
         require(iotNodes[nodeId].isRegistered, "Node not found!");
         IoTNode memory node = iotNodes[nodeId];
-        return (node.nodeName, node.nodeType, node.publicKey, node.isRegistered, node.capabilityToken);
+        return (node.nodeName, node.nodeType, node.publicKey, node.isRegistered, node.capabilityToken, node.registeredBy);
     }
 
     function getNodeType(string memory nodeTypeStr) internal pure returns (NodeType) {

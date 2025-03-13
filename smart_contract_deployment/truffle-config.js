@@ -1,7 +1,7 @@
 const HDWalletProvider = require("@truffle/hdwallet-provider");
 
 // Load private key and RPC URL
-const privateKey = "a803de60f3b8de4acdc6abb5bc080f2cd4168cb633e4a38019b27c64c3d3439d";
+const privateKey = "e1f272258d4ae19350e54db45178a7f23bc1ea441a49a9a1c0bd9c9e1912bbaa";
 const besuRpcUrl = "http://127.0.0.1:8545";
 
 module.exports = {

@@ -2,6 +2,7 @@ import json
 from eth_account import Account
 import subprocess
 import os
+import sys
 from eth_keys import keys
 
 class BlockchainInit:
@@ -233,7 +234,7 @@ class BlockchainInit:
                 "--node-private-key-file=" + self.private_key,
                 "--genesis-file=" + self.genesis_file,
                 "--rpc-http-enabled",
-                "--rpc-http-api=ETH,NET,QBFT",
+                "--rpc-http-api=ETH,NET,QBFT, ADMIN, WEB3",
                 "--host-allowlist=*",
                 "--rpc-http-cors-origins=all"],
                 stdout=subprocess.PIPE,
@@ -257,9 +258,15 @@ class BlockchainInit:
 
 if __name__ == "__main__":
     blockchain_init = BlockchainInit()
-    blockchain_init.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
-    blockchain_init.generate_keys()
-    blockchain_init.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json")
-    blockchain_init.update_genesis_file()
-    blockchain_init.update_extra_data_in_genesis()
-    blockchain_init.start_blockchain_node()
+    
+    if len(sys.argv) > 1:
+        method_name = sys.argv[1]
+        
+        # Check if the method exists in the class
+        if hasattr(blockchain_init, method_name):
+            method = getattr(blockchain_init, method_name)
+            method()  # Call the function dynamically
+        else:
+            print(f"❌ Error: Function '{method_name}' not found in BlockchainInit")
+    else:
+        print("⚠️ Usage: python blockchain_init.py <function_name>")

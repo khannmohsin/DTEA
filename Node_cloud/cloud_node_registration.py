@@ -5,7 +5,7 @@ import os
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
 
-    def __init__(self, filename="Node_cloud/data/nodes.json"):
+    def __init__(self, filename="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/unregistered_nodes.json"):
         """Initialize with the JSON file storing node data and set up Flask."""
         self.filename = filename
         self.nodes = self.load_nodes()
@@ -27,7 +27,7 @@ class NodeRegistry:
         with open(self.filename, "w") as f:
             json.dump(self.nodes, f, indent=4)
 
-    def register_node(self, node_id, node_name, node_type, public_key):
+    def register_node(self, node_id, node_name, node_type, public_key, address):
         """
         Register a node in the network.
         :param node_id: Unique Node ID (e.g., FN-001, CN-001)
@@ -42,7 +42,8 @@ class NodeRegistry:
         self.nodes[node_id] = {
             "node_name": node_name,
             "node_type": node_type,
-            "public_key": public_key
+            "public_key": public_key,
+            "address": address
         }
         self.save_nodes()
         return {"status": "approved", "message": f"{node_type} Node registered", "node_id": node_id}, 200
@@ -58,6 +59,34 @@ class NodeRegistry:
             return filtered_nodes
         return self.nodes
 
+    def add_validator_address(self, address):
+        """
+        Add a validator address to the JSON file.
+        :param address: Validator address to be added
+        :return: JSON response with status
+        """
+        validator_file = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/validator_address.json"
+        
+        if os.path.exists(validator_file):
+            with open(validator_file, "r") as f:
+                try:
+                    addresses = json.load(f)
+                except json.JSONDecodeError:
+                    addresses = []
+        else:
+            addresses = []
+
+        if address in addresses:
+            return {"status": "error", "message": "Address already exists"}, 409
+
+        addresses.append(address)
+        
+        with open(validator_file, "w") as f:
+            json.dump(addresses, f, indent=4)
+        
+        return {"status": "approved", "message": "Validator address added"}, 200
+    
+
     def setup_routes(self):
         """Setup Flask API routes inside the class."""
 
@@ -68,15 +97,17 @@ class NodeRegistry:
             print("Received Node Data:", data)
 
             # Validate received data
-            required_keys = {"node_id", "node_name", "node_type", "public_key"}
+            required_keys = {"node_id", "node_name", "node_type", "public_key", "address"}
             if not required_keys.issubset(data.keys()):
                 return jsonify({"status": "error", "message": "Missing required fields"}), 400
 
             # Register node
             response, status_code = self.register_node(
-                data["node_id"], data["node_name"], data["node_type"], data["public_key"]
+                data["node_id"], data["node_name"], data["node_type"], data["public_key"], data["address"]
             )
+            self.add_validator_address(data["address"])
             return jsonify(response), status_code
+
 
         @self.app.route("/get-nodes", methods=["GET"])
         def get_nodes():

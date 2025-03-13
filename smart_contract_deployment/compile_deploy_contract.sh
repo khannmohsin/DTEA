@@ -7,8 +7,8 @@ TRUFFLE_CONFIG="truffle-config.js"
 MIGRATIONS_DIR="migrations"
 DEPLOY_SCRIPT="$MIGRATIONS_DIR/2_deploy_contracts.js"
 
-# Private key and RPC URL (Update these before running the script)
-PRIVATE_KEY="a803de60f3b8de4acdc6abb5bc080f2cd4168cb633e4a38019b27c64c3d3439d"  # ⚠️ Replace with actual private key
+# Private key and RPC URL (Update these before running the script) of the ETH account
+PRIVATE_KEY="e1f272258d4ae19350e54db45178a7f23bc1ea441a49a9a1c0bd9c9e1912bbaa"  # ⚠️ Replace with actual private key
 BESU_RPC_URL="http://127.0.0.1:8545"
 
 echo "Starting Smart Contract Deployment on Besu..."
