@@ -143,7 +143,7 @@ send_acknowledgment() {
 process_unregistered_nodes() {
 
     # Check if the unregistered_nodes.json file exists
-    UNREGISTERED_NODES_FILE="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/unregistered_nodes.json"
+    UNREGISTERED_NODES_FILE="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/unregistered_nodes.json"
 
     if [ ! -f "$UNREGISTERED_NODES_FILE" ]; then
         # If the file does not exist, create it

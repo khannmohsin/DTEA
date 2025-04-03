@@ -5,7 +5,7 @@ const path = require('path');
 const { get } = require("http");
 const web3 = new Web3("http://127.0.0.1:8545"); // Besu JSON-RPC
 
-const contractAddress = "0xfc19082A440e416D2744a22cf6965d90c8C2b0f9"; // Replace with your contract address
+const contractAddress = "0x0E4B2AC3E4a3447D9F08F9B37432d9a0941a4B01"; // Replace with your contract address
 // const account = "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22"; // Replace with your account address
 // const privateKey = "def5be7c19dd1d6794b33240d36fa33dea3338d6e473011f47a3282e171326cd"; // Replace with your private key ETH account 
 
@@ -20,9 +20,9 @@ const contract = new web3.eth.Contract(contractJson.abi, contractAddress);
 /**
  * Function to Register an IoT Node (Fog, Edge, Sensor, Actuator)
  */
-async function registerNode(nodeId, nodeName, nodeTypeStr, publicKey, address) {
+async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, receiverNodeTypeStr) {
     try {
-        const txData = contract.methods.registerNode(nodeId, nodeName, nodeTypeStr, publicKey, address).encodeABI();
+        const txData = contract.methods.registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, receiverNodeTypeStr).encodeABI();
         let latestNonce = await web3.eth.getTransactionCount(account, 'pending'); // Get latest nonce
         let nonce = Number(latestNonce) + 1; // Convert BigInt to Number and increment
         console.log("🔹 Nonce:", nonce);
@@ -49,13 +49,23 @@ async function registerNode(nodeId, nodeName, nodeTypeStr, publicKey, address) {
                 event.data,
                 event.topics.slice(1)
             );
-            console.log(`🔑 Capability Token: ${decodedEvent.capabilityToken}`);
+            console.log(` Sender Capability Token: ${decodedEvent.senderCapabilityToken}`);
+            console.log(` Receiver Capability Token: ${decodedEvent.receiverCapabilityToken}`);
         }
 
     } catch (error) {
         console.error("❌ Error Registering Node:", error);
     }
 }
+
+// registerNode(
+//     "FOG-004",
+//     "Fog Node 4",
+//     "Fog",
+//     "0x1234567890123456789012345678901234567890",
+//     "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22",
+//     "Cloud"
+//   );
 
 async function isNodeRegistered(nodeId) {
     try {
@@ -78,12 +88,16 @@ async function getNodeDetails(nodeId) {
             nodeType: result[1],
             publicKey: result[2],
             isRegistered: result[3],
-            capabilityToken: result[4]
+            senderCapabilityToken: result[4],
+            receiverCapabilityToken: result[5],
+            registeredBy: result[6]
         });
     } catch (error) {
         console.error("Error Fetching Node Details:", error);
     }
 }
+
+getNodeDetails("FOG-004");
 
 async function getAllTransactions() {
     let latestBlock = await web3.eth.getBlockNumber(); // Get latest block number

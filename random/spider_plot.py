@@ -6,14 +6,15 @@ categories = ["Execution Speed", "Energy", "RAM", "ROM", "E-RANK"]
 num_vars = len(categories)
 
 # Lightweight hash functions being compared
-hash_functions = ["ASCON", "PHOTON-BEETLE", "XOODYAK", "SPARKLE", "ISAP"]
+hash_functions = ["ASCON", "PHOTON-Beetle", "Xoodyak", "ESCH", "ISAP"]
 
 # Raw benchmarking values
 cpb = [2531, 2158, 2450, 1633, 3953]  # Cycles per Byte (Lower is better)
-energy = [0.99, 0.96, 0.90, 0.92, 0.99]  # Energy in nJ (Lower is better)
+energy = [1099.3, 950.55, 1058.72, 719.05, 1714.84]  # Energy in nJ (Lower is better)
 ram = [153, 263, 390, 396, 250]  # RAM in bytes (Lower is better)
 rom = [2648, 1936, 2804, 3990, 4040]  # ROM in bytes (Lower is better)
-e_rank = [135.1, 196.06, 126.54, 139.19, 56.28]  # E-RANK (Higher is better)
+e_rank = [0.12, 0.2, 0.11, 0.18, 0.032]  # E-RANK (Higher is better)
+
 
 # Normalize data (scaling values between 0 and 1 for visualization)
 cpb_norm = [max(cpb) / val for val in cpb]  # Lower CpB is better, so we invert it
