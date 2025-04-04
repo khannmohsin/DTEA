@@ -18114,12 +18114,12 @@
     "1337": {
       "events": {},
       "links": {},
-      "address": "0x0E4B2AC3E4a3447D9F08F9B37432d9a0941a4B01",
-      "transactionHash": "0x09760ac0b4f56474305827f9a1ea30e4935f432eb99a1c3de52a25761c730f75"
+      "address": "0x1c0f8EA019CE010facb2718F2e4612735048D1Fb",
+      "transactionHash": "0x5e97f5c9a6799f2f3e43460b416dcbf4cddcdd1d583f62e7b0e64d72e95b9505"
     }
   },
   "schemaVersion": "3.4.16",
-  "updatedAt": "2025-03-14T18:30:36.612Z",
+  "updatedAt": "2025-04-03T16:12:04.898Z",
   "networkType": "ethereum",
   "devdoc": {
     "kind": "dev",

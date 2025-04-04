@@ -5,7 +5,7 @@ const path = require('path');
 const { get } = require("http");
 const web3 = new Web3("http://127.0.0.1:8545"); // Besu JSON-RPC
 
-const contractAddress = "0x0E4B2AC3E4a3447D9F08F9B37432d9a0941a4B01"; // Replace with your contract address
+const contractAddress = "0x1c0f8EA019CE010facb2718F2e4612735048D1Fb"; // Replace with your contract address
 // const account = "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22"; // Replace with your account address
 // const privateKey = "def5be7c19dd1d6794b33240d36fa33dea3338d6e473011f47a3282e171326cd"; // Replace with your private key ETH account 
 
@@ -80,24 +80,50 @@ async function isNodeRegistered(nodeId) {
 /**
  * Get Details of a Node
  */
+
+// async function getNodeDetails(nodeId) {
+//     try {
+//         const result = await contract.methods.getNodeDetails(nodeId).call();
+        
+//         // Uncomment the following lines to log details in a more readable format
+//         console.log(`🔍 Node Details:`, {
+//             nodeName: result[0],
+//             nodeType: result[1],
+//             publicKey: result[2],
+//             isRegistered: result[3],
+//             senderCapabilityToken: result[4],
+//             receiverCapabilityToken: result[5],
+//             registeredBy: result[6]
+//         });
+//     } catch (error) {
+//         console.error("Error Fetching Node Details:", error);
+//     }
+// }
+
 async function getNodeDetails(nodeId) {
     try {
         const result = await contract.methods.getNodeDetails(nodeId).call();
-        console.log(`🔍 Node Details:`, {
+
+        const details = {
             nodeName: result[0],
-            nodeType: result[1],
+            nodeType: result[1].toString(),
             publicKey: result[2],
-            isRegistered: result[3],
-            senderCapabilityToken: result[4],
-            receiverCapabilityToken: result[5],
+            isRegistered: result[3], 
+            senderCapabilityToken: result[4], 
+            receiverCapabilityToken: result[5], 
             registeredBy: result[6]
-        });
+        };
+
+        console.log(JSON.stringify(details));
     } catch (error) {
-        console.error("Error Fetching Node Details:", error);
+        console.log(JSON.stringify({
+            error: "Error fetching node details",
+            message: error.message
+        }));
     }
 }
 
-getNodeDetails("FOG-004");
+// getNodeDetails("FN-001");
 
 async function getAllTransactions() {
     let latestBlock = await web3.eth.getBlockNumber(); // Get latest block number
@@ -129,3 +155,21 @@ module.exports = {
     isNodeRegistered,
     getNodeDetails
 };
+
+if (require.main === module) {
+    const args = process.argv.slice(2);
+    const command = args[0];
+
+    (async () => {
+        if (command === "isRegistered") {
+            const nodeId = args[1];
+            const result = await isNodeRegistered(nodeId);
+            console.log(result); // <== crucial for Python to capture
+        }
+        
+        if (command === "getNodeDetails") {
+            const nodeId = args[1];
+            await getNodeDetails(nodeId);
+        }
+    })();
+}

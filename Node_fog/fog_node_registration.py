@@ -105,27 +105,27 @@ class NodeRegistry:
             if "genesis_file" in request.files:
                 file = request.files["genesis_file"]
                 file.save(GENESIS_SAVE_PATH)
-                print(f"✅ Saved Genesis File to {GENESIS_SAVE_PATH}")
+                print(f"Saved Genesis File to {GENESIS_SAVE_PATH}")
             else:
-                print("⚠️ No Genesis File received!")
+                print("No Genesis File received!")
 
             # Save Node Registry File
             if "node_registry_file" in request.files:
                 file = request.files["node_registry_file"]
                 file.save(NODE_REGISTRY_SAVE_PATH)
-                print(f"✅ Saved Node Registry File to {NODE_REGISTRY_SAVE_PATH}")
+                print(f"Saved Node Registry File to {NODE_REGISTRY_SAVE_PATH}")
             else:
-                print("⚠️ No Node Registry File received!")
+                print("No Node Registry File received!")
 
             # Save Enode ID
             if enode:
                 with open(ENODE_SAVE_PATH, "w") as enode_file:
                     enode_file.write(enode)
-                print(f"✅ Enode Saved to {ENODE_SAVE_PATH}")
+                print(f"Enode Saved to {ENODE_SAVE_PATH}")
             else:
-                print("⚠️ No Enode received!")
+                print("No Enode received!")
 
-            print(f"✅ Acknowledgment Processed for Node {node_id}") 
+            print(f"Acknowledgment Processed for Node {node_id}") 
             return jsonify({"status": "success", "message": "Acknowledgment received, files saved, and enode stored"}), 200
         
         

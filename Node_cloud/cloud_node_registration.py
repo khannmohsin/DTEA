@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 import json
 import os
+import subprocess
+
 
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
@@ -11,6 +13,54 @@ class NodeRegistry:
         self.nodes = self.load_nodes()
         self.app = Flask(__name__)
         self.setup_routes()
+
+    def is_node_registered_js(self, node_id):
+        try:
+            result = subprocess.run(
+                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "isRegistered", node_id],
+                capture_output=True,
+                text=True
+            )
+
+            print("Node Registration Check Result:", result.stdout.strip())
+
+            if result.returncode != 0:
+                return {"status": "error", "message": result.stderr.strip()}, 500
+
+            output = result.stdout.strip()
+            if output == "true":
+                return {"status": "success", "registered": True}, 200
+            elif output == "false":
+                return {"status": "success", "registered": False}, 200
+            else:
+                return {"status": "error", "message": f"Unexpected output: {output}"}, 500
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}, 500
+        
+    def get_node_details_js(self, node_id):
+        try:
+            result = subprocess.run(
+                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getNodeDetails", node_id],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                return {"status": "error", "message": result.stderr.strip()}, 500
+
+            output = result.stdout.strip()
+            
+            try:
+                # Attempt to parse the JSON output from JS
+                details = json.loads(output)
+                return {"status": "success", "details": details}, 200
+            except json.JSONDecodeError:
+                return {"status": "error", "message": "Invalid JSON from JS", "raw_output": output}, 500
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}, 500
+    
 
     def load_nodes(self):
         """Load existing node data from the JSON file."""
@@ -108,6 +158,59 @@ class NodeRegistry:
             self.add_validator_address(data["address"])
             return jsonify(response), status_code
 
+        @self.app.route("/read", methods=["GET"])
+        def read():
+            print("Received Read Request")
+            node_id = request.args.get("node_id")
+
+            if not node_id:
+                return jsonify({"status": "error", "message": "Missing node_id"}), 400
+
+            print("Node ID Received:", node_id)
+
+            result, status_code = self.is_node_registered_js(node_id)
+
+            if result["registered"]:
+                details, status = self.get_node_details_js(node_id)
+                if status == 200:
+                    print("Node Details:")
+                    # print(json.dumps(details["details"], indent=4))  # Pretty print
+                    receiver_token = details["details"].get("receiverCapabilityToken", "")
+                    permissions = [perm.strip() for perm in receiver_token.split(",")]
+                    if "Cloud:WRITE" in permissions:
+                        print("Allowed to write on Cloud:", receiver_token)
+                        return jsonify({"status": "success", "message": f"Node {node_id} is allowed to read"}), 200
+                    else:
+                        print("Not Allowed to Write on Cloud:", receiver_token)
+                        return jsonify({"status": "failure", "message": f"Node {node_id} is not allowed to read"}), 200
+                else:
+                    print("Error fetching node details:")
+                    print(json.dumps(details, indent=4))
+                # print("Node Details:", response)
+            else:
+                return jsonify({"status": "error: register the node first", "message": f"Node {node_id} is not registered"}), 404
+
+
+
+        @self.app.route("/write", methods=["POST"])
+        def write():
+            print("Received Write Request")
+            data = request.json
+            print("Received Data:", data)
+
+        @self.app.route("/execute", methods=["POST"])
+        def execute():
+            print("Received Execute Request")
+            data = request.json
+            print("Received Data:", data)
+
+        @self.app.route("/transmit", methods=["POST"])
+        def transmit():
+            print("Received Transmit Request")
+            data = request.json
+            print("Received Data:", data)
+
+
 
         @self.app.route("/get-nodes", methods=["GET"])
         def get_nodes():
@@ -122,5 +225,6 @@ class NodeRegistry:
 
 if __name__ == "__main__":
     registry = NodeRegistry()
+    # registry.is_node_registered_js("FN-001")
     registry.run()
 

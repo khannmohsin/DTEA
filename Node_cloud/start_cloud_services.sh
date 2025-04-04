@@ -17,25 +17,6 @@ DESTINATION_DIR="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/
 UNREGISTERED_NODES_FILE="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/unregistered_nodes.json"
 
 
-# Display help message
-show_help() {
-    echo "Usage: ./manage_blockchain.sh <operation> [args]"
-    echo ""
-    echo "Available operations:"
-    echo "  init-blockchain         Initialize the blockchain (generate keys, create genesis, extra data)"
-    echo "  start-blockchain        Start the blockchain node"
-    echo "  stop         Stop the blockchain node"
-    echo "  restart      Restart the blockchain node"
-    echo "  reset        Reset blockchain data and start fresh"
-    echo "  help         Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  ./manage_blockchain.sh init"
-    echo "  ./manage_blockchain.sh start"
-    echo "  ./manage_blockchain.sh reset"
-}
-
-
 # **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {
     echo " Starting Cloud Node Flask API..."
@@ -164,13 +145,15 @@ register_fog_node() {
     local node_type="$3" 
     local public_key="$4"
     local address="$5"
+    local registeredby_node_type="Cloud"
+
     
     # Call the Node.js script and capture the output (transaction hash or error)
     local result=$(node -e "
         (async () => {
             const script = require('./interact.js');
             try {
-                const txHash = await script.registerNode('$node_id', '$node_name', '$node_type', '$public_key', '$address');
+                const txHash = await script.registerNode('$node_id', '$node_name', '$node_type', '$public_key', '$address', '$registeredby_node_type');
                 console.log(txHash);  
             } catch (error) {
                 console.log('ERROR');  
@@ -203,8 +186,9 @@ process_unregistered_nodes() {
 
     while true; do
         # Read the file and register each node
+
         while IFS= read -r node_id; do
-            echo "Checking registration status for node_id: $node_id"
+            echo "Checking registration status for node_id: $node_id" 
             registration_status=$(is_node_registered "$node_id")
             echo "Registration status: $registration_status"
 
@@ -213,12 +197,14 @@ process_unregistered_nodes() {
                 echo "Registering node_id: $node_id"
                 node_details=$(jq -r --arg node_id "$node_id" '.[$node_id]' "$UNREGISTERED_NODES_FILE")
                 echo "Node details: $node_details"
-                
+
                 node_name=$(jq -r '.node_name' <<< "$node_details")
                 node_type=$(jq -r '.node_type' <<< "$node_details")
                 public_key=$(jq -r '.public_key' <<< "$node_details")
                 address=$(jq -r '.address' <<< "$node_details")
-                if register_fog_node "$node_id" "$node_name" $node_type "$public_key" "$address"; then
+
+
+                if register_fog_node "$node_id" "$node_name" "$node_type" "$public_key" "$address"; then
                     registration_status=$(is_node_registered "$node_id")
                     if [ "$registration_status" == "true" ]; then
                         send_acknowledgment
@@ -289,6 +275,7 @@ case "$1" in
         echo "  stop-blockchain   Stop the blockchain node"
         echo "  restart-blockchain Restart the blockchain node"
         echo "  init-blockchain   Initialize blockchain setup"
+        echo "  reinit-blockchain Reinitialize blockchain data and start fresh"
         echo "  register-nodes    Process unregistered nodes"
         echo "  send-ack          Send acknowledgment to Fog Node"
         echo ""
