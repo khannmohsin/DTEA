@@ -10,14 +10,16 @@ contract NodeRegistry {
         NodeType nodeType;
         string publicKey;
         bool isRegistered;
-        // We store the tokens as a single string (joined with commas)
         string senderCapabilityToken;
         string receiverCapabilityToken;
         address registeredBy;
         NodeType registeredByNodeType;
+        string nodeSignature; 
     }
 
     mapping(string => IoTNode) public iotNodes;
+    mapping(string => string) public nodeSignatureToNodeId;
+    mapping(address => string) public addressToNodeId;
     
     // Updated event: tokens are now a single string each.
     event NodeRegistered(
@@ -28,7 +30,8 @@ contract NodeRegistry {
         string senderCapabilityToken,
         string receiverCapabilityToken,
         address registeredBy,
-        NodeType registeredByNodeType 
+        NodeType registeredByNodeType,
+        string nodeSignature
     );
     
     // Helper function to join an array of strings with commas.
@@ -49,18 +52,17 @@ contract NodeRegistry {
         string memory nodeTypeStr,
         string memory publicKey,
         address registeredBy,
-        string memory registeredByNodeTypeStr
+        string memory registeredByNodeTypeStr,
+        string memory nodeSignature 
     ) public {
-        require(!iotNodes[nodeId].isRegistered, "Node already registered!");
-
+        require(bytes(nodeSignatureToNodeId[nodeSignature]).length == 0, "Node already registered!");
+        nodeSignatureToNodeId[nodeSignature] = nodeId;
         NodeType nodeType = getNodeType(nodeTypeStr);
         NodeType regByNodeType = getNodeType(registeredByNodeTypeStr);
         require(nodeType != NodeType.Unknown, "Invalid node type!");
-        require(regByNodeType != NodeType.Unknown, "Invalid registered by node type!");
+        require(regByNodeType != NodeType.Unknown, "Invalid registered-by node type!");
 
-        // Get arrays of permissions
-        (string[] memory senderTokens, string[] memory receiverTokens) = generateToken(nodeType, regByNodeType);  
-        // Join the arrays into single strings
+        (string[] memory senderTokens, string[] memory receiverTokens) = generateToken(nodeType, regByNodeType);
         string memory senderCapabilityToken = joinStringArray(senderTokens);
         string memory receiverCapabilityToken = joinStringArray(receiverTokens);
 
@@ -72,37 +74,66 @@ contract NodeRegistry {
             senderCapabilityToken: senderCapabilityToken,
             receiverCapabilityToken: receiverCapabilityToken,
             registeredBy: registeredBy,
-            registeredByNodeType: regByNodeType
+            registeredByNodeType: regByNodeType,
+            nodeSignature: nodeSignature
         });
 
-        emit NodeRegistered(nodeId, nodeName, nodeType, publicKey, senderCapabilityToken, receiverCapabilityToken, registeredBy, regByNodeType);
+        addressToNodeId[registeredBy] = nodeId;
+
+        emit NodeRegistered(
+            nodeId,
+            nodeName,
+            nodeType,
+            publicKey,
+            senderCapabilityToken,
+            receiverCapabilityToken,
+            registeredBy,
+            regByNodeType,
+            nodeSignature
+        );
     }
 
-    function isNodeRegistered(string memory nodeId) public view returns (bool) {
-        return iotNodes[nodeId].isRegistered;
+    function isNodeRegistered(string memory nodeSignature) public view returns (bool) {
+        string memory nodeId = nodeSignatureToNodeId[nodeSignature];
+        return (
+            iotNodes[nodeId].isRegistered &&
+            keccak256(abi.encodePacked(iotNodes[nodeId].nodeSignature)) == keccak256(abi.encodePacked(nodeSignature))
+        );
     }
 
-    function getNodeDetails(string memory nodeId) 
+    function getNodeDetailsBySignature(string memory nodeSignature)
         public view returns (
-            string memory, 
-            NodeType, 
-            string memory, 
-            bool, 
-            string memory, 
-            string memory, 
-            address
-        ) 
+            string memory,
+            string memory,
+            NodeType,
+            string memory,
+            bool,
+            string memory,
+            string memory,
+            address,
+            string memory,
+            NodeType
+        )
     {
-        require(iotNodes[nodeId].isRegistered, "Node not found!");
+        string memory nodeId = nodeSignatureToNodeId[nodeSignature];
+        require(
+            iotNodes[nodeId].isRegistered &&
+            keccak256(abi.encodePacked(iotNodes[nodeId].nodeSignature)) == keccak256(abi.encodePacked(nodeSignature)),
+            "No matching node registered with this signature"
+        );
+
         IoTNode memory node = iotNodes[nodeId];
         return (
-            node.nodeName, 
-            node.nodeType, 
-            node.publicKey, 
-            node.isRegistered, 
-            node.senderCapabilityToken, 
-            node.receiverCapabilityToken, 
-            node.registeredBy
+            nodeId,
+            node.nodeName,
+            node.nodeType,
+            node.publicKey,
+            node.isRegistered,
+            node.senderCapabilityToken,
+            node.receiverCapabilityToken,
+            node.registeredBy,
+            node.nodeSignature,
+            node.registeredByNodeType
         );
     }
 

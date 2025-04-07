@@ -47,7 +47,7 @@ generate_keys() {
 }
 
 receive_acknowledgement() {
-    echo "Waiting for the acknowledgement from the cloud..."
+    echo "Waiting for the acknowledgement from the cloud...Check the flask for if the acknowledgement is received or not"
     start_flask
     sleep 5
 }
@@ -91,8 +91,10 @@ node_registration_request() {
     local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
 
     echo "Registering Fog Node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
     receive_acknowledgement
+    sleep 5
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    
 }
 
 node_read(){
@@ -117,22 +119,67 @@ node_read(){
 }
 
 node_write(){
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+        echo "Error: Missing arguments for node registration."
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        exit 1
+    fi
+    # Extract arguments
+    local node_id="$1"
+    echo "Node ID: $node_id"
+    local node_name="$2"
+    echo "Node Name: $node_name"
+    local node_type="$3"
+    echo "Node Type: $node_type"
     local cloud_url="http://127.0.0.1:5000"
+    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" write "$cloud_url" 
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
 }
+
 
 node_transmit(){
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+        echo "Error: Missing arguments for node registration."
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        exit 1
+    fi
+    # Extract arguments
+    local node_id="$1"
+    echo "Node ID: $node_id"
+    local node_name="$2"
+    echo "Node Name: $node_name"
+    local node_type="$3"
+    echo "Node Type: $node_type"
     local cloud_url="http://127.0.0.1:5000"
+    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" transmit "$cloud_url" 
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
 }
 
+
 node_execute(){
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+        echo "Error: Missing arguments for node registration."
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        exit 1
+    fi
+    # Extract arguments
+    local node_id="$1"
+    echo "Node ID: $node_id"
+    local node_name="$2"
+    echo "Node Name: $node_name"
+    local node_type="$3"
+    echo "Node Type: $node_type"
     local cloud_url="http://127.0.0.1:5000"
+    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" transmit "$cloud_url" 
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+
 }
+
+
 is_node_registered() {
     local node_id="$1"
 
@@ -276,13 +323,13 @@ case "$1" in
         node_read "$2" "$3" "$4"
         ;;
     write-data)
-        node_write
+        node_write "$2" "$3" "$4"
         ;;
     transmit-data)
-        node_transmit
+        node_transmit "$2" "$3" "$4"
         ;;
     execute-data)
-        node_execute
+        node_execute "$2" "$3" "$4"
         ;;
     help)
         echo "Usage: ./manage_fog_node.sh <operation>"

@@ -53,7 +53,7 @@ class CloudAcknowledgementSender:
         # Fetch enode ID
         enode_id = self.get_enode()
         if not enode_id:
-            print("❌ Error: Enode could not be retrieved!")
+            print("Error: Enode could not be retrieved!")
             return
 
         data = {
@@ -70,12 +70,12 @@ class CloudAcknowledgementSender:
             response = requests.post(f"{self.fog_node_url}/acknowledgement", data=data, files=files)
 
             if response.status_code == 200:
-                print(f"✅ Acknowledgment sent successfully to Node {node_id} with enode: {enode_id}")
+                print(f"Acknowledgment sent successfully to Node {node_id} with enode: {enode_id}")
             else:
-                print(f"❌ Failed to send acknowledgment: {response.json()}")
+                print(f"Failed to send acknowledgment: {response.json()}")
 
         except Exception as e:
-            print(f"❌ Error sending acknowledgment: {e}")
+            print(f"Error sending acknowledgment: {e}")
 
         finally:
             # Close file handles
@@ -83,20 +83,20 @@ class CloudAcknowledgementSender:
                 file.close()
 
 
-# Define Fog Node API URL
-FOG_NODE_URL = "http://127.0.0.1:5001"  # Update with actual Fog Node URL
+# # Define Fog Node API URL
+# FOG_NODE_URL = "http://127.0.0.1:5001"  # Update with actual Fog Node URL
 
-# Define file paths
-GENESIS_FILE_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json"
-NODE_REGISTRY_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
+# # Define file paths
+# GENESIS_FILE_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json"
+# NODE_REGISTRY_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
 
-# Besu RPC URL
-BESU_RPC_URL = "http://127.0.0.1:8545"
+# # Besu RPC URL
+# BESU_RPC_URL = "http://127.0.0.1:8545"
 
-# Initialize Acknowledgment Sender
-cloud_ack_sender = CloudAcknowledgementSender(FOG_NODE_URL, GENESIS_FILE_PATH, NODE_REGISTRY_PATH, BESU_RPC_URL)
+# # Initialize Acknowledgment Sender
+# cloud_ack_sender = CloudAcknowledgementSender(FOG_NODE_URL, GENESIS_FILE_PATH, NODE_REGISTRY_PATH, BESU_RPC_URL)
 
-# Send Acknowledgment (Example)
-cloud_ack_sender.send_acknowledgment(
-    node_id="FN-002"
-)
+# # Send Acknowledgment (Example)
+# cloud_ack_sender.send_acknowledgment(
+#     node_id="FN-002"
+# )

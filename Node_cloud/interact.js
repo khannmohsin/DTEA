@@ -5,7 +5,7 @@ const path = require('path');
 const { get } = require("http");
 const web3 = new Web3("http://127.0.0.1:8545"); // Besu JSON-RPC
 
-const contractAddress = "0x1c0f8EA019CE010facb2718F2e4612735048D1Fb"; // Replace with your contract address
+const contractAddress = "0x948B3c478CBc58b592d5bE12eBA3FD31FCfd1e45"; // Replace with your contract address
 // const account = "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22"; // Replace with your account address
 // const privateKey = "def5be7c19dd1d6794b33240d36fa33dea3338d6e473011f47a3282e171326cd"; // Replace with your private key ETH account 
 
@@ -20,12 +20,12 @@ const contract = new web3.eth.Contract(contractJson.abi, contractAddress);
 /**
  * Function to Register an IoT Node (Fog, Edge, Sensor, Actuator)
  */
-async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, receiverNodeTypeStr) {
+async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, receiverNodeTypeStr, nodeSignature) {
     try {
-        const txData = contract.methods.registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, receiverNodeTypeStr).encodeABI();
+        const txData = contract.methods.registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, receiverNodeTypeStr, nodeSignature).encodeABI();
         let latestNonce = await web3.eth.getTransactionCount(account, 'pending'); // Get latest nonce
         let nonce = Number(latestNonce) + 1; // Convert BigInt to Number and increment
-        console.log("🔹 Nonce:", nonce);
+        console.log("Nonce:", nonce);
 
         const tx = {
             from: account,
@@ -54,66 +54,53 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
         }
 
     } catch (error) {
-        console.error("❌ Error Registering Node:", error);
+        console.error("Error Registering Node:", error);
     }
 }
 
 // registerNode(
-//     "FOG-004",
-//     "Fog Node 4",
+//     "FN-009",
+//     "Fog Nde 1",
 //     "Fog",
-//     "0x1234567890123456789012345678901234567890",
-//     "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22",
-//     "Cloud"
-//   );
+//     "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+//     "e39035c0c9ae46f48fdd6325f12787c862a78daf",
+//     "Cloud",
+//     "0x1234567890abcdef1234567890abcde71234567890abcdef1434567890abcdef"
+// );
 
-async function isNodeRegistered(nodeId) {
+async function isNodeRegistered(nodeSignature) {
     try {
-        const result = await contract.methods.isNodeRegistered(nodeId).call();
+        const result = await contract.methods.isNodeRegistered(nodeSignature).call();
+        console.log(result);
         return result;
     } catch (error) {
-        console.error("Error Checking Node Registration:", error);
-        console.log("ERROR");
+        console.error("Error Checking Node Registration (nodeSignature):", error);
+        return false;
     }
 }
 
+// isNodeRegistered("0x1234567890abcdef1234567890abcee71234567890abcdef1434567890abcdef");
 /**
  * Get Details of a Node
  */
 
-// async function getNodeDetails(nodeId) {
-//     try {
-//         const result = await contract.methods.getNodeDetails(nodeId).call();
-        
-//         // Uncomment the following lines to log details in a more readable format
-//         console.log(`🔍 Node Details:`, {
-//             nodeName: result[0],
-//             nodeType: result[1],
-//             publicKey: result[2],
-//             isRegistered: result[3],
-//             senderCapabilityToken: result[4],
-//             receiverCapabilityToken: result[5],
-//             registeredBy: result[6]
-//         });
-//     } catch (error) {
-//         console.error("Error Fetching Node Details:", error);
-//     }
-// }
-
-async function getNodeDetails(nodeId) {
+async function getNodeDetails(nodeSignature) {
     try {
-        const result = await contract.methods.getNodeDetails(nodeId).call();
+        const result = await contract.methods.getNodeDetailsBySignature(nodeSignature).call();
+        // console.log("Node Details:", result);
 
         const details = {
-            nodeName: result[0],
-            nodeType: result[1].toString(),
-            publicKey: result[2],
-            isRegistered: result[3], 
-            senderCapabilityToken: result[4], 
-            receiverCapabilityToken: result[5], 
-            registeredBy: result[6]
+            nodeId: result[0],
+            nodeName: result[1],
+            nodeType: result[2].toString(),
+            publicKey: result[3],
+            isRegistered: result[4],
+            senderCapabilityToken: result[5],
+            receiverCapabilityToken: result[6],
+            registeredBy: result[7],
+            nodeSignature: result[8], // ✅ Includes signature
+            registeredByNodeType: result[9].toString(),
         };
-
         console.log(JSON.stringify(details));
     } catch (error) {
         console.log(JSON.stringify({
@@ -123,7 +110,7 @@ async function getNodeDetails(nodeId) {
     }
 }
 
-// getNodeDetails("FN-001");
+// getNodeDetails("0x1234567890abcdef1234567890abcde71234567890abcdef1434567890abcdef");
 
 async function getAllTransactions() {
     let latestBlock = await web3.eth.getBlockNumber(); // Get latest block number
@@ -141,7 +128,6 @@ async function getAllTransactions() {
                 console.log(`   🔹 Value: ${web3.utils.fromWei(tx.value, 'ether')} ETH`);
                 console.log(`   🔹 Gas Used: ${tx.gas}`);
                 console.log(`   🔹 Nonce: ${tx.nonce}`);
-                console.log("------------------------------------------------");
             });
         }
     }
@@ -161,15 +147,36 @@ if (require.main === module) {
     const command = args[0];
 
     (async () => {
-        if (command === "isRegistered") {
-            const nodeId = args[1];
-            const result = await isNodeRegistered(nodeId);
-            console.log(result); // <== crucial for Python to capture
+        if (command === "isNodeRegistered") {
+            const nodeSignature = args[1]; // Now expects address, not nodeId
+            const result = await isNodeRegistered(nodeSignature);
         }
-        
+
         if (command === "getNodeDetails") {
-            const nodeId = args[1];
-            await getNodeDetails(nodeId);
+            const nodeSignature = args[1];
+            await getNodeDetails(nodeSignature);
+        }
+
+        if (command === "registerNode") {
+            const [
+                nodeId,
+                nodeName,
+                senderNodeTypeStr,
+                publicKey,
+                address,
+                receiverNodeTypeStr,
+                nodeSignature
+            ] = args.slice(1);
+
+            await registerNode(
+                nodeId,
+                nodeName,
+                senderNodeTypeStr,
+                publicKey,
+                address,
+                receiverNodeTypeStr,
+                nodeSignature
+            );
         }
     })();
 }

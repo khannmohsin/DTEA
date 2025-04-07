@@ -15,13 +15,13 @@
         "difficulty": "0x1",
         "coinbase": "0x0000000000000000000000000000000000000000",
         "alloc": {
-            "0x0D4869519D81aF3BE9FE3A6BAe67bc0988A48e40": {
+            "0x22227e3671Ec2383920e8e5B0904Fe31433ACe08": {
                 "balance": "90000000000000000000000"
             },
-            "0x754827ee6671c94815edAB9EF721a4bE6B835401": {
+            "0xedBeD75dAeBcac0A624FE312f18e20210bb14a34": {
                 "balance": "90000000000000000000000"
             },
-            "0x6F6E7C0D390c3352e3dfD1fD457f3D008D7783Ad": {
+            "0x16fF7bBa7C1abbEEc34F0Ace5eB858A8aEDA297D": {
                 "balance": "90000000000000000000000"
             }
         }

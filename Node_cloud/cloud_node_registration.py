@@ -1,8 +1,12 @@
 from flask import Flask, request, jsonify
+from cloud_acknowledgement import CloudAcknowledgementSender
 import json
 import os
 import subprocess
 
+from eth_keys import keys
+from eth_utils import keccak
+import re
 
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
@@ -12,20 +16,67 @@ class NodeRegistry:
         self.filename = filename
         self.nodes = self.load_nodes()
         self.app = Flask(__name__)
-        self.setup_routes()
+        self.setup_routes()                
 
-    def is_node_registered_js(self, node_id):
+    def verify_node_identity(self, data):
+        try:
+            signature_hex = data.get("signature")
+            public_key_hex = data.get("public_key")
+
+            # Create the original message (must match what the node signed)
+            message_dict = {
+                "node_id": data.get("node_id"),
+                "node_name": data.get("node_name"),
+                "node_type": data.get("node_type"),
+                "public_key": public_key_hex
+            }
+
+            message_json = json.dumps(message_dict, sort_keys=True)
+            message_hash = keccak(text=message_json)
+
+            if public_key_hex.startswith("0x"):
+                public_key_hex = public_key_hex[2:]
+            if signature_hex.startswith("0x"):
+                signature_hex = signature_hex[2:]
+
+            public_key = keys.PublicKey(bytes.fromhex(public_key_hex))
+            signature = keys.Signature(bytes.fromhex(signature_hex))
+
+            return public_key.verify_msg_hash(message_hash, signature)
+
+        except Exception as e:
+            print("Signature verification failed:", str(e))
+            return False
+
+    def register_node_on_chain(self, node_id, node_name, node_type, public_key, address, receiver_node_type, signature):
+        try:
+            result = subprocess.run([
+                "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "registerNode",
+                node_id, node_name, node_type, public_key, address, receiver_node_type, signature
+            ], capture_output=True, text=True)
+
+            output = result.stdout.strip()
+
+            # Ensure always returning 3 values
+            if result.returncode != 0:
+                return "error", result.stderr.strip(), output  
+
+            # Changed: return 3 values to match expected unpacking
+            return "success", "Node registered", output
+
+        except Exception as e:
+            return "error", f"Exception occurred: {str(e)}", ""  
+        
+    def is_node_registered_js(self, nodeSignature):
         try:
             result = subprocess.run(
-                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "isRegistered", node_id],
+                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "isNodeRegistered", nodeSignature],
                 capture_output=True,
                 text=True
             )
 
-            print("Node Registration Check Result:", result.stdout.strip())
-
-            if result.returncode != 0:
-                return {"status": "error", "message": result.stderr.strip()}, 500
+            # print(result)
+            print("-----------")
 
             output = result.stdout.strip()
             if output == "true":
@@ -33,15 +84,16 @@ class NodeRegistry:
             elif output == "false":
                 return {"status": "success", "registered": False}, 200
             else:
+                print("Unexpected output:", output)
                 return {"status": "error", "message": f"Unexpected output: {output}"}, 500
 
         except Exception as e:
             return {"status": "error", "message": str(e)}, 500
         
-    def get_node_details_js(self, node_id):
+    def get_node_details_js(self, nodeSignature):
         try:
             result = subprocess.run(
-                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getNodeDetails", node_id],
+                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getNodeDetails", nodeSignature],
                 capture_output=True,
                 text=True
             )
@@ -86,6 +138,7 @@ class NodeRegistry:
         :param public_key: Public key of the node
         :return: JSON response with status
         """
+        
         if node_id in self.nodes:
             return {"status": "error", "message": "Node already registered"}, 409
         
@@ -138,77 +191,207 @@ class NodeRegistry:
     
 
     def setup_routes(self):
+        GENESIS_FILE_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json"
+        NODE_REGISTRY_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
+        BESU_RPC_URL = "http://127.0.0.1:8545"
+        FOG_NODE_URL = "http://127.0.0.1:5001" 
         """Setup Flask API routes inside the class."""
 
         @self.app.route("/register-node", methods=["POST"])
         def register_node():
             print("Received Node Registration Request")
             data = request.json
-            print("Received Node Data:", data)
+            print("Received Node Data:")
+            for key, value in data.items():
+                print(f"{key}: {value}")
 
-            # Validate received data
-            required_keys = {"node_id", "node_name", "node_type", "public_key", "address"}
-            if not required_keys.issubset(data.keys()):
-                return jsonify({"status": "error", "message": "Missing required fields"}), 400
+            verify_result = self.verify_node_identity(data)
 
-            # Register node
-            response, status_code = self.register_node(
-                data["node_id"], data["node_name"], data["node_type"], data["public_key"], data["address"]
-            )
-            self.add_validator_address(data["address"])
-            return jsonify(response), status_code
+            if verify_result is True:
+                print("Signature Verification Successful. The node is valid.")
+                print("Lets check if the node is registered on the blockchain or not")
+
+                # Check if the node is registered on the blockchain
+                result, status_code = self.is_node_registered_js(data["signature"])
+                print("Node Registration Check Result:", result)
+
+                if result["registered"] == True:
+                    print("Node is already registered on the blockchain.")
+                    return jsonify({"status": "error", "message": "Node already registered on the blockchain"}), 409
+                else:
+                    print("Node is not registered on the blockchain. Proceeding with registration.")
+                    # return jsonify({"status": "success", "message": "Node need to be registered on the blockchain"}), 409
+                    # Register the node on the blockchain
+                    status, message, raw_output = self.register_node_on_chain(
+                        data["node_id"], data["node_name"], data["node_type"], data["public_key"],
+                        data["address"], "Cloud", data["signature"]
+                    )
+
+                    # print(status, message, raw_output)
+                    if status == "success":
+                        print("Node registered successfully on the blockchain.\n \n ")
+                        print("Node Registration Output Message:")
+                        for line in raw_output.split("\n"):
+                            print(line)
+                        
+                        print(f"Sending acknowledgment to the Fog Node with ID: {data['node_id']}")
+                        cloud_ack_sender = CloudAcknowledgementSender(FOG_NODE_URL, GENESIS_FILE_PATH, NODE_REGISTRY_PATH, BESU_RPC_URL)
+                        response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
+                        cloud_ack_sender.send_acknowledgment(node_id="Cloud")
+                        return response, 200                    
+                    else:
+                        print("Error in registering node on the blockchain:", message)
+                        return jsonify({"status": "error", "message": message}), 500
+            else:
+                print("Signature Verification Failed. The node is invalid.")
+                return jsonify({"status": "error", "message": "Signature verification failed"}), 400
+                    
 
         @self.app.route("/read", methods=["GET"])
         def read():
             print("Received Read Request")
+            signature = request.args.get("signature")
             node_id = request.args.get("node_id")
 
-            if not node_id:
-                return jsonify({"status": "error", "message": "Missing node_id"}), 400
+            if not signature:
+                return jsonify({"status": "error", "message": "Missing signature"}), 400
 
-            print("Node ID Received:", node_id)
+            print(f"Signature of the {node_id} :", signature)
 
-            result, status_code = self.is_node_registered_js(node_id)
+            result, status_code = self.is_node_registered_js(signature)
+            print("Node Registration Check Result:", result)
 
             if result["registered"]:
-                details, status = self.get_node_details_js(node_id)
+                print("Node is registered on the blockchain.")
+                details, status = self.get_node_details_js(signature)
                 if status == 200:
                     print("Node Details:")
-                    # print(json.dumps(details["details"], indent=4))  # Pretty print
+                    print(json.dumps(details["details"], indent=4))  # Pretty print
                     receiver_token = details["details"].get("receiverCapabilityToken", "")
                     permissions = [perm.strip() for perm in receiver_token.split(",")]
-                    if "Cloud:WRITE" in permissions:
-                        print("Allowed to write on Cloud:", receiver_token)
+                    if "Cloud:READ" in permissions:
+                        print("Allowed to read on Cloud:", receiver_token)
                         return jsonify({"status": "success", "message": f"Node {node_id} is allowed to read"}), 200
                     else:
-                        print("Not Allowed to Write on Cloud:", receiver_token)
+                        print("Not Allowed to read on Cloud:", receiver_token)
                         return jsonify({"status": "failure", "message": f"Node {node_id} is not allowed to read"}), 200
                 else:
                     print("Error fetching node details:")
                     print(json.dumps(details, indent=4))
                 # print("Node Details:", response)
             else:
-                return jsonify({"status": "error: register the node first", "message": f"Node {node_id} is not registered"}), 404
+                print("Node is not registered on the blockchain. Go through the Registration process.")
+                return jsonify({"status": "error", "message": f"Node {node_id} is not registered.  Register the node first"}), 404
 
 
 
         @self.app.route("/write", methods=["POST"])
         def write():
-            print("Received Write Request")
-            data = request.json
-            print("Received Data:", data)
+            print("Received Read Request")
+            signature = request.args.get("signature")
+            node_id = request.args.get("node_id")
+
+            if not signature:
+                return jsonify({"status": "error", "message": "Missing signature"}), 400
+
+            print(f"Signature of the {node_id} :", signature)
+
+            result, status_code = self.is_node_registered_js(signature)
+            print("Node Registration Check Result:", result)
+
+            if result["registered"]:
+                print("Node is registered on the blockchain.")
+                details, status = self.get_node_details_js(signature)
+                if status == 200:
+                    print("Node Details:")
+                    print(json.dumps(details["details"], indent=4))  # Pretty print
+                    receiver_token = details["details"].get("receiverCapabilityToken", "")
+                    permissions = [perm.strip() for perm in receiver_token.split(",")]
+                    if "Cloud:WRITE" in permissions:
+                        print("Allowed to write on Cloud:", receiver_token)
+                        return jsonify({"status": "success", "message": f"Node {node_id} is allowed to write"}), 200
+                    else:
+                        print("Not Allowed to write on Cloud:", receiver_token)
+                        return jsonify({"status": "failure", "message": f"Node {node_id} is not allowed to write"}), 200
+                else:
+                    print("Error fetching node details:")
+                    print(json.dumps(details, indent=4))
+                # print("Node Details:", response)
+            else:
+                print("Node is not registered on the blockchain. Go through the Registration process.")
+                return jsonify({"status": "error", "message": f"Node {node_id} is not registered.  Register the node first"}), 404
 
         @self.app.route("/execute", methods=["POST"])
         def execute():
-            print("Received Execute Request")
-            data = request.json
-            print("Received Data:", data)
+            print("Received Read Request")
+            signature = request.args.get("signature")
+            node_id = request.args.get("node_id")
+
+            if not signature:
+                return jsonify({"status": "error", "message": "Missing signature"}), 400
+
+            print(f"Signature of the {node_id} :", signature)
+
+            result, status_code = self.is_node_registered_js(signature)
+            print("Node Registration Check Result:", result)
+
+            if result["registered"]:
+                print("Node is registered on the blockchain.")
+                details, status = self.get_node_details_js(signature)
+                if status == 200:
+                    print("Node Details:")
+                    print(json.dumps(details["details"], indent=4))  # Pretty print
+                    receiver_token = details["details"].get("receiverCapabilityToken", "")
+                    permissions = [perm.strip() for perm in receiver_token.split(",")]
+                    if "Cloud:EXECUTE" in permissions:
+                        print("Allowed to execute on Cloud:", receiver_token)
+                        return jsonify({"status": "success", "message": f"Node {node_id} is allowed to execute"}), 200
+                    else:
+                        print("Not Allowed to read on Cloud:", receiver_token)
+                        return jsonify({"status": "failure", "message": f"Node {node_id} is not allowed to execute"}), 200
+                else:
+                    print("Error fetching node details:")
+                    print(json.dumps(details, indent=4))
+                # print("Node Details:", response)
+            else:
+                print("Node is not registered on the blockchain. Go through the Registration process.")
+                return jsonify({"status": "error", "message": f"Node {node_id} is not registered.  Register the node first"}), 404
 
         @self.app.route("/transmit", methods=["POST"])
         def transmit():
-            print("Received Transmit Request")
-            data = request.json
-            print("Received Data:", data)
+            print("Received Read Request")
+            signature = request.args.get("signature")
+            node_id = request.args.get("node_id")
+
+            if not signature:
+                return jsonify({"status": "error", "message": "Missing signature"}), 400
+
+            print(f"Signature of the {node_id} :", signature)
+
+            result, status_code = self.is_node_registered_js(signature)
+            print("Node Registration Check Result:", result)
+
+            if result["registered"]:
+                print("Node is registered on the blockchain.")
+                details, status = self.get_node_details_js(signature)
+                if status == 200:
+                    print("Node Details:")
+                    print(json.dumps(details["details"], indent=4))  # Pretty print
+                    receiver_token = details["details"].get("receiverCapabilityToken", "")
+                    permissions = [perm.strip() for perm in receiver_token.split(",")]
+                    if "Cloud:TRANSMIT" in permissions:
+                        print("Allowed to transmit on Cloud:", receiver_token)
+                        return jsonify({"status": "success", "message": f"Node {node_id} is allowed to transmit"}), 200
+                    else:
+                        print("Not Allowed to transmit on Cloud:", receiver_token)
+                        return jsonify({"status": "failure", "message": f"Node {node_id} is not allowed to transmit"}), 200
+                else:
+                    print("Error fetching node details:")
+                    print(json.dumps(details, indent=4))
+                # print("Node Details:", response)
+            else:
+                print("Node is not registered on the blockchain. Go through the Registration process.")
+                return jsonify({"status": "error", "message": f"Node {node_id} is not registered.  Register the node first"}), 404
 
 
 

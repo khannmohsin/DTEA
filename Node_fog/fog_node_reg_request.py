@@ -5,6 +5,9 @@ import os
 import subprocess
 import sys
 import time
+import json  # <-- Added for signing
+from eth_keys import keys  # <-- Added for signing
+from eth_utils import keccak
 
 class Node:
     def __init__(self, node_id, node_name, node_type, cloud_url, key_path):
@@ -23,6 +26,8 @@ class Node:
         self.cloud_url = cloud_url  # Cloud Node API URL
         self.public_key = self.load_public_key(key_path)  # Load Public Key from file
         self.private_key = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.priv"
+        # uncomment after testing
+        # self.address = "e39035c0c9ae42348fdd6325f12787c862a88dae"
         self.address = self.get_address()  # Get the address of the node
 
     def get_address(self):
@@ -45,15 +50,41 @@ class Node:
                 return key_file.read().strip()
         else:
             raise FileNotFoundError(f"Public Key File Not Found: {key_path}")
+        
 
+    def sign_identity(self):
+        message_dict = {
+            "node_id": self.node_id,
+            "node_name": self.node_name,
+            "node_type": self.node_type,
+            "public_key": self.public_key
+        }
+        message_json = json.dumps(message_dict, sort_keys=True)
+        message_hash = keccak(text=message_json)
+
+        with open(self.private_key, "r") as f:
+            private_key_hex = f.read().strip()
+
+        if private_key_hex.startswith("0x"):
+            private_key_hex = private_key_hex[2:]
+
+        private_key = keys.PrivateKey(bytes.fromhex(private_key_hex))
+        signature = private_key.sign_msg_hash(message_hash)
+        return signature.to_hex()
+    
+    
     def register_with_cloud(self):
+
+    
+
         """Send Public Key & Metadata to Cloud API for Registration."""
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
             "node_type": self.node_type,  # Node type added
             "public_key": self.public_key,
-            "address": self.address
+            "address": self.address,
+            "signature": self.sign_identity()
         }
 
         response = requests.post(f"{self.cloud_url}/register-node", json=data)
@@ -71,7 +102,8 @@ class Node:
             "node_name": self.node_name,
             "node_type": self.node_type,  # Node type added
             "public_key": self.public_key,
-            "address": self.address
+            "address": self.address,
+            "signature": self.sign_identity()
         }
 
         """Read data from the accessed Node."""
@@ -90,29 +122,100 @@ class Node:
             print("Raw response:", response.text)
             return None
         
-    def transmit_data(self, data):
-        """Send data to the Cloud Node."""
-        response = requests.post(f"{self.cloud_url}/data", json=data)
-        if response.status_code == 200:
-            print("Data Transmitted Successfully!")
-        else:
-            print(f"Error Transmitting Data: {response.json()}")
-        
-    def execute_command(self, command):
-        """Execute a command on the Cloud Node."""
-        response = requests.post(f"{self.cloud_url}/execute", json={"command": command})
-        if response.status_code == 200:
-            print("Command Executed Successfully!")
-        else:
-            print(f"Error Executing Command: {response.json()}")
+    def transmit_data(self):
+        data = {
+            "node_id": self.node_id,
+            "node_name": self.node_name,
+            "node_type": self.node_type,  # Node type added
+            "public_key": self.public_key,
+            "address": self.address,
+            "signature": self.sign_identity()
+        }
+        """Transmit data to the Cloud Node."""
+        response = requests.post(f"{self.cloud_url}/transmit", params=data)
 
-    def write_data(self, data):
-        """Write data to the Cloud Node."""
-        response = requests.post(f"{self.cloud_url}/write", json=data)
-        if response.status_code == 200:
-            print("Data Written Successfully!")
-        else:
-            print(f"Error Writing Data: {response.json()}")
+        try:
+            if response.status_code == 200:
+                print("Data:", response.json())
+                return response.json()
+            else:
+                print(f"Error Reading Data (Status {response.status_code}): {response.text}")
+                return None
+            
+        except ValueError:
+            print("Error: Response was not valid JSON")
+            print("Raw response:", response.text)
+            return None
+        
+    def write_data(self):
+        data = {
+            "node_id": self.node_id,
+            "node_name": self.node_name,
+            "node_type": self.node_type,  # Node type added
+            "public_key": self.public_key,
+            "address": self.address,
+            "signature": self.sign_identity()
+        }
+        """Transmit data to the Cloud Node."""
+        response = requests.post(f"{self.cloud_url}/write", params=data)
+
+        try:
+            if response.status_code == 200:
+                print("Data:", response.json())
+                return response.json()
+            else:
+                print(f"Error Reading Data (Status {response.status_code}): {response.text}")
+                return None
+            
+        except ValueError:
+            print("Error: Response was not valid JSON")
+            print("Raw response:", response.text)
+            return None
+        
+    def execute_command(self):
+        data = {
+            "node_id": self.node_id,
+            "node_name": self.node_name,
+            "node_type": self.node_type,  # Node type added
+            "public_key": self.public_key,
+            "address": self.address,
+            "signature": self.sign_identity()
+        }
+        """Execute a command on the Cloud Node."""
+        response = requests.post(f"{self.cloud_url}/execute", params=data)
+
+        try:
+            if response.status_code == 200:
+                print("Data:", response.json())
+                return response.json()
+            else:
+                print(f"Error Reading Data (Status {response.status_code}): {response.text}")
+                return None
+            
+        except ValueError:
+            print("Error: Response was not valid JSON")
+            print("Raw response:", response.text)
+            return None
+            
+
+    # def transmit_data(self):
+    #     """Transmit data to the Cloud Node."""            
+
+    # def execute_command(self):
+    #     """Execute a command on the Cloud Node."""
+    #     response = requests.post(f"{self.cloud_url}/execute", json={"command": command})
+    #     if response.status_code == 200:
+    #         print("Command Executed Successfully!")
+    #     else:
+    #         print(f"Error Executing Command: {response.json()}")
+
+    # def write_data(self, data):
+    #     """Write data to the Cloud Node."""
+    #     response = requests.post(f"{self.cloud_url}/write", json=data)
+    #     if response.status_code == 200:
+    #         print("Data Written Successfully!")
+    #     else:
+    #         print(f"Error Writing Data: {response.json()}")
 
 # Example: Register a Fog Node
 if __name__ == "__main__":
@@ -137,38 +240,32 @@ if __name__ == "__main__":
             node = Node(node_id, node_name, node_type, cloud_url, key_path)
             data = node.read_data()
 
-
-        elif command == "transmit":
-            if len(sys.argv) != 4:
-                print("Usage: python fog_node.py transmit <cloud_url> <data>")
-                sys.exit(1)
-
-            cloud_url, data = sys.argv[2], sys.argv[3]
-            node = Node("FOG-001", "FogDevice-001", "Fog", cloud_url, "/path/to/key.pub")
-            node.transmit_data(data)
-
-            cloud_url = sys.argv[2]
-            node = Node("FOG-001", "FogDevice-001", "Fog", cloud_url, "/path/to/key.pub")
-            data = node.read_data()
-            print("Data Read:", data)
-
-        elif command == "execute":
-            if len(sys.argv) != 4:
-                print("Usage: python fog_node.py execute <cloud_url> <command>")
-                sys.exit(1)
-
-            cloud_url, command = sys.argv[2], sys.argv[3]
-            node = Node("FOG-001", "FogDevice-001", "Fog", cloud_url, "/path/to/key.pub")
-            node.execute_command(command)
-
         elif command == "write":
-            if len(sys.argv) != 4:
+            if len(sys.argv) != 7:
                 print("Usage: python fog_node.py write <cloud_url> <data>")
                 sys.exit(1)
 
-            cloud_url, data = sys.argv[2], sys.argv[3]
-            node = Node("FOG-001", "FogDevice-001", "Fog", cloud_url, "/path/to/key.pub")
-            node.write_data(data)
+            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node.write_data()
+
+        elif command == "transmit":
+            if len(sys.argv) != 7:
+                print("Usage: python fog_node.py transmit <cloud_url> <data>")
+                sys.exit(1)
+
+            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node.transmit_data()
+
+        elif command == "execute":
+            if len(sys.argv) != 7:
+                print("Usage: python fog_node.py execute <cloud_url> <data>")
+                sys.exit(1)
+
+            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node.execute_command()
 
         else:
             print(f"Error: Unknown command '{command}'")
