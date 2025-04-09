@@ -125,3 +125,21 @@ Summary
 
 
 
+
+curl -X POST --data '{"jsonrpc":"2.0","method":"qbft_getPendingVotes","params":[],"id":1}' http://127.0.0.1:8545
+
+
+curl -X POST --data '{
+  "jsonrpc":"2.0",
+  "method":"qbft_proposeValidatorVote",
+  "params":["0x89ffb92d07371391d599f12517b33d968d060977", true],
+  "id":1
+}' http://localhost:8545
+
+
+curl -X POST --data '{
+  "jsonrpc":"2.0",
+  "method":"qbft_getValidatorsByBlockNumber",
+  "params":["latest"],
+  "id":1
+}' http://localhost:8547

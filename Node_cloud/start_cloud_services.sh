@@ -46,17 +46,19 @@ restart_blockchain() {
 
 initialize_blockchain() {
     # Check if qbftConfigFile.json is present
+
+    echo "Initializing Blockchain Root..."
     if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json" ]; then
         echo "qbftConfigFile.json is already present."
     else
-        echo "qbftConfigFile.json is missing. Creating qbftConfigFile..."
+        echo "Creating qbftConfigFile..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_qbft_file 3 1
     fi
 
     if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/key.priv" ] && [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/key.pub" ]; then
         echo "Key files are already present."
     else
-        echo "Key files are missing. Generating keys..."
+        echo "Generating keys..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" generate_keys
     fi
 
@@ -64,7 +66,7 @@ initialize_blockchain() {
     if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json" ]; then
         echo "genesis.json is already present."
     else
-        echo "genesis.json is missing. Generating genesis file..."
+        echo "Generating genesis file..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_genesis_file "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json"
     fi
 
@@ -72,7 +74,7 @@ initialize_blockchain() {
     if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/validator_address.json" ]; then
         echo "validator_address.json is already present."
     else
-        echo "validator_address.json is missing. Generating keys..."
+        echo "Extracting the validator address..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_genesis_file
     fi
 
@@ -80,31 +82,32 @@ initialize_blockchain() {
     if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/extraData.rlp" ]; then
         echo "extraData.rlp is already present."
     else
-        echo "extraData.rlp is missing. Updating extra data in genesis..."
+        echo "Updating extra data in genesis file..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_extra_data_in_genesis
     fi
 
-    # Define source and destination paths
-    SOURCE_FILE="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/smart_contract_deployment/build/contracts/NodeRegistry.json"
-    DESTINATION_DIR="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data"
+    # # Define source and destination paths
+    # SOURCE_FILE="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/smart_contract_deployment/build/contracts/NodeRegistry.json"
+    # DESTINATION_DIR="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data"
 
-    # Check if the source file already exists at the destination
-    if [ -f "$DESTINATION_DIR/$(basename "$SOURCE_FILE")" ]; then
-        echo "Node Registry File already exists at the destination."
-    else
-        # Check if the source file exists
-        if [ -f "$SOURCE_FILE" ]; then
-            # Move the file to the destination directory
-            cp "$SOURCE_FILE" "$DESTINATION_DIR"
-            echo "File moved to $DESTINATION_DIR"
-        else
-            echo "Deploy smart contract to obtain this file."
-        fi
-    fi
+    # # Check if the source file already exists at the destination
+    # if [ -f "$DESTINATION_DIR/$(basename "$SOURCE_FILE")" ]; then
+    #     echo "Node Registry File already exists at the destination."
+    # else
+    #     # Check if the source file exists
+    #     if [ -f "$SOURCE_FILE" ]; then
+    #         # Move the file to the destination directory
+    #         cp "$SOURCE_FILE" "$DESTINATION_DIR"
+    #         echo "File moved to $DESTINATION_DIR"
+    #     else
+    #         echo "Deploy smart contract to obtain this file."
+    #     fi
+    # fi
 }
 
 reinitialize_blockchain() {
     # Remove the data directory
+    echo "Reinitializing Blockchain Root and removing  data directory, genesis directory, qbftConfigFile, and prefunded_keys.json ..."
     rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data"
     rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis"
     rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json"
@@ -115,8 +118,9 @@ reinitialize_blockchain() {
 }
 
 send_acknowledgment() {
+    # $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_genesis_file
     $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_extra_data_in_genesis
-    $PYTHON_V_ENV "$ACKNOW_SCRIPT"
+    # $PYTHON_V_ENV "$ACKNOW_SCRIPT"
 }
 
 is_node_registered() {

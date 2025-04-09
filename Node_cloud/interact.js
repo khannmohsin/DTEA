@@ -3,9 +3,10 @@ const contractJson = require("/Users/khannmohsin/VSCode_Projects/MyDisIoT_Projec
 const fs = require('fs');
 const path = require('path');
 const { get } = require("http");
+const { send } = require("process");
 const web3 = new Web3("http://127.0.0.1:8545"); // Besu JSON-RPC
 
-const contractAddress = "0x948B3c478CBc58b592d5bE12eBA3FD31FCfd1e45"; // Replace with your contract address
+const contractAddress = "0xe14eb15bF04e9326178DEF9AF3A9CBE3Eba159Bd"; // Replace with your contract address
 // const account = "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22"; // Replace with your account address
 // const privateKey = "def5be7c19dd1d6794b33240d36fa33dea3338d6e473011f47a3282e171326cd"; // Replace with your private key ETH account 
 
@@ -51,6 +52,7 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
             );
             console.log(` Sender Capability Token: ${decodedEvent.senderCapabilityToken}`);
             console.log(` Receiver Capability Token: ${decodedEvent.receiverCapabilityToken}`);
+            console.log(` Node Signature: ${decodedEvent.nodeSignature}`);
         }
 
     } catch (error) {
@@ -59,13 +61,13 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
 }
 
 // registerNode(
-//     "FN-009",
+//     "FN-010",
 //     "Fog Nde 1",
-//     "Fog",
+//     "Sensor",
 //     "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
 //     "e39035c0c9ae46f48fdd6325f12787c862a78daf",
-//     "Cloud",
-//     "0x1234567890abcdef1234567890abcde71234567890abcdef1434567890abcdef"
+//     "Edge",
+//     "0x1234569878abd6ef1234567890abcde71234567890abcdef1434567890abcdef"
 // );
 
 async function isNodeRegistered(nodeSignature) {
@@ -78,6 +80,56 @@ async function isNodeRegistered(nodeSignature) {
         return false;
     }
 }
+
+// isNodeRegistered("0x435c1648ffa09c0927d7cac44ca80180eb1a4f2eaf33c5fae1b00654fd4c7d4c5050a4a2956dc20ff68f3a9fcd18109da00daa2f952fe63fb6628b0efb9d1ac001");
+
+async function proposeValidatorVote(validatorAddress, add = true) {
+    try {
+        const payload = {
+            jsonrpc: "2.0",
+            method: "qbft_proposeValidatorVote",
+            params: [validatorAddress, add],
+            id: 1
+        };
+
+        const response = await fetch("http://127.0.0.1:8545", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        console.log("Vote submitted:", data);
+    } catch (error) {
+        console.error("Error proposing validator vote:", error);
+    }
+}
+// proposeValidatorVote("0xda93c8f69ec4616947b4bf31234122d25cbef854", true);
+
+async function sendConsensusTriggerTransaction() {
+    try {
+        const latestNonce = await web3.eth.getTransactionCount(account, 'pending');
+        const tx = {
+            from: "0xC0FAee0CBf5ff0139B0DBE121626f837EE86725c",
+            to: "0xC0FAee0CBf5ff0139B0DBE121626f837EE86725c", // send to self
+            value: '0x0',
+            gas: 21000,
+            gasPrice: '3000',
+            nonce: latestNonce
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+        console.log("📤 Dummy Tx Sent. Hash:", receipt.transactionHash);
+    } catch (error) {
+        console.error("❌ Error sending dummy transaction:", error);
+    }
+}
+
+// sendConsensusTriggerTransaction();
+
+// sendDummyTransaction();
+
 
 // isNodeRegistered("0x1234567890abcdef1234567890abcee71234567890abcdef1434567890abcdef");
 /**
@@ -110,7 +162,22 @@ async function getNodeDetails(nodeSignature) {
     }
 }
 
-// getNodeDetails("0x1234567890abcdef1234567890abcde71234567890abcdef1434567890abcdef");
+
+// getNodeDetails("0x1234569870abddef1234567890abcde71234567890abcdef1434567890abcdef");
+
+
+async function isValidator(nodeSignature) {
+    try {
+        const result = await contract.methods.isValidator(nodeSignature).call();
+        console.log(result);
+        return result;
+    } catch (error) {
+        console.log("false");
+        return false;
+    }
+}
+
+isValidator("0x1234569878abd6ef1234567890abcde71234567890abcdef1434567890abcdef");
 
 async function getAllTransactions() {
     let latestBlock = await web3.eth.getBlockNumber(); // Get latest block number
@@ -133,13 +200,25 @@ async function getAllTransactions() {
     }
 }
 
-// getAllTransactions();
+async function checkIfDeployed(contractAddress) {
+    try {
+        const code = await web3.eth.getCode(contractAddress);
+        const isDeployed = code !== '0x' && code !== '0x0';
+        console.log(isDeployed);
+        return isDeployed;
+    } catch (error) {
+        console.log("false");
+        return false;
+    }
+}
 
+// checkIfDeployed(contractAddress)
 
 module.exports = {
     registerNode,
     isNodeRegistered,
-    getNodeDetails
+    getNodeDetails,
+    checkIfDeployed
 };
 
 if (require.main === module) {
@@ -155,6 +234,10 @@ if (require.main === module) {
         if (command === "getNodeDetails") {
             const nodeSignature = args[1];
             await getNodeDetails(nodeSignature);
+        }
+
+        if (command === "checkIfDeployed") {
+            await checkIfDeployed(contractAddress);
         }
 
         if (command === "registerNode") {

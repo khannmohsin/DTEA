@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from cloud_acknowledgement import CloudAcknowledgementSender
+from cloud_blockchain_init import BlockchainInit
 import json
 import os
 import subprocess
@@ -189,7 +190,34 @@ class NodeRegistry:
         
         return {"status": "approved", "message": "Validator address added"}, 200
     
+    def check_smart_contract(self):
+        node_registry_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
 
+        if os.path.exists(node_registry_path):
+            print("Node registry file exists. Smart contract can be checked onchain.")
+            return True
+        else:
+            print("Node registry file does not exist. Smart contract cannot be checked onchain.")
+            # If the node registry file doesn't exist, we assume the smart contract is not deployed
+            return False
+        
+    def check_smart_contract_deployment(self):
+            result = subprocess.run([
+                "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "checkIfDeployed",
+            ], capture_output=True, text=True)
+            
+            output = result.stdout.strip()
+
+            if output == "true":
+                print("Smart contract is correctly deployed.")
+                return True
+            elif output == "false":
+                print("Older version of smart contract deployed. Update Contract address.")
+                return False
+            else:
+                print("Unexpected output:", output)
+                return False
+        
     def setup_routes(self):
         GENESIS_FILE_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json"
         NODE_REGISTRY_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
@@ -199,7 +227,18 @@ class NodeRegistry:
 
         @self.app.route("/register-node", methods=["POST"])
         def register_node():
-            print("Received Node Registration Request")
+
+            check_smart_contract = self.check_smart_contract()
+
+            if check_smart_contract:
+                if self.check_smart_contract_deployment():
+                    print("Received Node Registration Request")
+                    # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
+                else:
+                    return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
+            else:
+                return jsonify({"status": "error", "message": "Smart contract not deployed.... \n Wait for admin to upload Smart Contract..."}), 500
+            
             data = request.json
             print("Received Node Data:")
             for key, value in data.items():
@@ -235,6 +274,8 @@ class NodeRegistry:
                             print(line)
                         
                         print(f"Sending acknowledgment to the Fog Node with ID: {data['node_id']}")
+                        # blockchain = BlockchainInit()
+                        # blockchain.update_extra_data_in_genesis()
                         cloud_ack_sender = CloudAcknowledgementSender(FOG_NODE_URL, GENESIS_FILE_PATH, NODE_REGISTRY_PATH, BESU_RPC_URL)
                         response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
                         cloud_ack_sender.send_acknowledgment(node_id="Cloud")

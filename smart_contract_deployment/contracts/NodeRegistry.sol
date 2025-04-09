@@ -149,6 +149,23 @@ contract NodeRegistry {
         return NodeType.Unknown; // Invalid type
     }
 
+    function isValidator(string memory nodeSignature) public view returns (bool) {
+        string memory nodeId = nodeSignatureToNodeId[nodeSignature];
+        require(
+            iotNodes[nodeId].isRegistered &&
+            keccak256(abi.encodePacked(iotNodes[nodeId].nodeSignature)) == keccak256(abi.encodePacked(nodeSignature)),
+            "Node not found or invalid signature"
+        );
+
+        NodeType nodeType = iotNodes[nodeId].nodeType;
+
+        if (nodeType == NodeType.Cloud || nodeType == NodeType.Fog) {
+            return true;
+        }
+
+        return false;
+    }
+    
     // Updated generateToken: returns arrays of strings.
     function generateToken(NodeType nodeType, NodeType registeredByNodeType) 
         internal pure returns (string[] memory, string[] memory) 

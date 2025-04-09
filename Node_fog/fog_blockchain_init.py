@@ -17,7 +17,7 @@ class BlockchainInit:
         self.validator_addresses = os.path.join(self.genesis_files_path, "validator_address.json")
         self.genesis_file = os.path.join(self.genesis_files_path, "genesis.json")
         self.enode_file = os.path.join(self.data_path, "enode.txt") 
-        self.enode_address = self.load_enode_address()
+        # self.enode_address = self.load_enode_address()
 
         
     #---------------------Load Enode address---------------------------- 
@@ -34,7 +34,7 @@ class BlockchainInit:
         
     #---------------------Node Public and Private generation----------------------------
     def generate_keys(self):
-        """Generates a new Ethereum account (private key and address)."""
+        """Generates a new Node keys (private key and public key)."""
         account = Account.create()
         os.makedirs(self.data_path, exist_ok=True)
 
@@ -237,6 +237,7 @@ class BlockchainInit:
 
     #---------------------Start the blockchain node----------------------------
     def start_blockchain_node(self):
+        enode_address = self.load_enode_address()
         """Starts the Besu node using subprocess.Popen()"""
         try:
             print("Starting Besu node...")
@@ -246,10 +247,10 @@ class BlockchainInit:
                 "--data-path=" + self.data_path,
                 "--node-private-key-file=" + self.private_key,
                 "--genesis-file=" + self.genesis_file,
-                "--bootnodes=" + self.enode_address,
+                "--bootnodes=" + enode_address,
                 "--p2p-port=30304",
                 "--rpc-http-enabled",
-                "--rpc-http-api=ETH,NET,QBFT",
+                "--rpc-http-api=ETH,NET,QBFT, WEB3",
                 "--host-allowlist=*",
                 "--rpc-http-cors-origins=all",
                 "--rpc-http-port=8546"],

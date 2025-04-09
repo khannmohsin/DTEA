@@ -4,9 +4,10 @@
 PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/python"
 
 # Define paths to Python scripts
-BLOCKCHAIN_SCRIPT="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/fog_blockchain_init.py"
-FLASK_SCRIPT="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/fog_node_registration.py"
-FOG_NODE_REGISTRATION_SCRIPT="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/fog_node_reg_request.py"
+ROOT_PATH="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog"
+BLOCKCHAIN_SCRIPT="$ROOT_PATH/fog_blockchain_init.py"
+FLASK_SCRIPT="$ROOT_PATH/fog_node_registration.py"
+FOG_NODE_REGISTRATION_SCRIPT="$ROOT_PATH/fog_node_reg_request.py"
 
 # Display help message
 show_help() {
@@ -54,9 +55,9 @@ receive_acknowledgement() {
 
 # **Function to Start Blockchain**
 start_blockchain() {
-
-    if [ ! -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/genesis/genesis.json" ] && [ ! -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/enode.txt" ] && [ ! -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/NodeRegistry.json" ]; then
-        echo "Acknowledgement files not received."
+    
+    if [ ! -f "$ROOT_PATH/genesis/genesis.json" ] && [ ! -f "$ROOT_PAT/data/NodeRegistry.json" ]; then
+        echo "Register first and receive acknowledgement to get started."
         exit 1
     fi
     echo "Starting Blockchain..."
@@ -88,13 +89,31 @@ node_registration_request() {
     local node_type="$3"
     echo "Node Type: $node_type"
     local cloud_url="http://127.0.0.1:5000"
-    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+    local key_path="/$ROOT_PATH/data/key.pub"
 
+    # Check if Flask is running
+    FLASK_PORT=5001
+    if nc -z localhost "$FLASK_PORT"; then
+        echo "Flask is already running on port $FLASK_PORT."
+    else
+        echo "Flask is not running. Starting Flask..."
+        start_flask
+        sleep 5
+        if nc -z localhost "$FLASK_PORT"; then
+            echo "Flask started successfully."
+        else
+            echo "Failed to start Flask. Please check the Flask script."
+            exit 1
+        fi
+    fi
+    echo ""
     echo "Registering Fog Node..."
-    receive_acknowledgement
-    sleep 5
+
     $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
-    
+
+    sleep 5
+
+    # start_blockchain
 }
 
 node_read(){
@@ -235,6 +254,42 @@ send_acknowledgment() {
     $PYTHON_V_ENV "$ACKNOW_SCRIPT"
 }
 
+initialize_chain_client() {
+    echo "Initializing chain client..."
+
+    if [ -f "$ROOT_PATH/data/key.priv" ] && [ -f "$ROOT_PATH/data/key.pub" ]; then
+        echo "Key files are already present."
+    else
+        echo "Generating keys..."
+        $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" generate_keys
+    fi
+
+    # # Check if validator_address.json is present
+    # if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/validator_address.json" ]; then
+    #     echo "validator_address.json is already present."
+    # else
+    #     echo "Extracting the validator address..."
+    #     $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_genesis_file
+    # fi
+
+    # # Check if extraData.rlp is present
+    # if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/extraData.rlp" ]; then
+    #     echo "extraData.rlp is already present."
+    # else
+    #     echo "Updating extra data in genesis file..."
+    #     $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_extra_data_in_genesis
+    # fi
+}
+
+
+reinitialize_chain_client() {
+
+    echo "Reinitializing chain client and removing keys..."
+    # Remove existing key files
+    rm -rf "$ROOT_PATH/data"
+    initialize_chain_client
+}
+
 process_unregistered_nodes() {
 
     # Check if the unregistered_nodes.json file exists
@@ -298,6 +353,9 @@ case "$1" in
     start-flask)
         start_flask
         ;;
+    generate-keys)
+        generate_keys
+        ;;
     start-blockchain)
         start_blockchain
         ;;
@@ -307,8 +365,11 @@ case "$1" in
     restart-blockchain)
         restart_fog_blockchain
         ;;
-    init-blockchain)
-        initialize_fog_blockchain
+    init-chain_client)
+        initialize_chain_client
+        ;;
+    reinit-chain-client)
+        reinitialize_chain_client
         ;;
     register)
         node_registration_request "$2" "$3" "$4"
