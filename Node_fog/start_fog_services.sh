@@ -50,14 +50,13 @@ generate_keys() {
 receive_acknowledgement() {
     echo "Waiting for the acknowledgement from the cloud...Check the flask for if the acknowledgement is received or not"
     start_flask
-    sleep 5
 }
 
 # **Function to Start Blockchain**
 start_blockchain() {
     
     if [ ! -f "$ROOT_PATH/genesis/genesis.json" ] && [ ! -f "$ROOT_PAT/data/NodeRegistry.json" ]; then
-        echo "Register first and receive acknowledgement to get started."
+        echo "Acknowledgement not received from the cloud. Please check the Flask script."
         exit 1
     fi
     echo "Starting Blockchain..."
@@ -107,13 +106,18 @@ node_registration_request() {
         fi
     fi
     echo ""
-    echo "Registering Fog Node..."
 
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    # Check for existing keys
+    if [ ! -f "$key_path" ]; then
+        echo "Key file not found. Initialize blockchain first."
+    else
+        echo "Key file found. Continuing with registration..."
+        $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    fi
+}
 
-    sleep 5
-
-    # start_blockchain
+listen_for_validator_updates(){
+    $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_validator_event_listener
 }
 
 node_read(){
@@ -287,6 +291,7 @@ reinitialize_chain_client() {
     echo "Reinitializing chain client and removing keys..."
     # Remove existing key files
     rm -rf "$ROOT_PATH/data"
+    rm -rf "$ROOT_PATH/genesis"
     initialize_chain_client
 }
 
@@ -362,10 +367,13 @@ case "$1" in
     stop-blockchain)
         stop_fog_blockchain
         ;;
+    update-validators)
+        listen_for_validator_updates
+        ;;
     restart-blockchain)
         restart_fog_blockchain
         ;;
-    init-chain_client)
+    init-chain-client)
         initialize_chain_client
         ;;
     reinit-chain-client)

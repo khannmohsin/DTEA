@@ -10,8 +10,8 @@ contract NodeRegistry {
         NodeType nodeType;
         string publicKey;
         bool isRegistered;
-        string senderCapabilityToken;
-        string receiverCapabilityToken;
+        // string senderCapabilityToken;
+        // string receiverCapabilityToken;
         address registeredBy;
         NodeType registeredByNodeType;
         string nodeSignature; 
@@ -20,20 +20,28 @@ contract NodeRegistry {
     mapping(string => IoTNode) public iotNodes;
     mapping(string => string) public nodeSignatureToNodeId;
     mapping(address => string) public addressToNodeId;
-    
+
+    // Event to signal validator proposal for off-chain listeners
+    event ValidatorProposed(address indexed proposedBy, address indexed validator);    
     // Updated event: tokens are now a single string each.
     event NodeRegistered(
         string indexed nodeId,
         string nodeName,
         NodeType nodeType,
         string publicKey,
-        string senderCapabilityToken,
-        string receiverCapabilityToken,
+        // string senderCapabilityToken,
+        // string receiverCapabilityToken,
         address registeredBy,
         NodeType registeredByNodeType,
         string nodeSignature
     );
-    
+
+
+    function proposeValidator(address validator) public {
+        require(validator != address(0), "Invalid validator address");
+        emit ValidatorProposed(msg.sender, validator); 
+    }
+
     // Helper function to join an array of strings with commas.
     function joinStringArray(string[] memory arr) internal pure returns (string memory) {
         bytes memory result;
@@ -62,17 +70,17 @@ contract NodeRegistry {
         require(nodeType != NodeType.Unknown, "Invalid node type!");
         require(regByNodeType != NodeType.Unknown, "Invalid registered-by node type!");
 
-        (string[] memory senderTokens, string[] memory receiverTokens) = generateToken(nodeType, regByNodeType);
-        string memory senderCapabilityToken = joinStringArray(senderTokens);
-        string memory receiverCapabilityToken = joinStringArray(receiverTokens);
+        // (string[] memory senderTokens, string[] memory receiverTokens) = generateToken(nodeType, regByNodeType);
+        // string memory senderCapabilityToken = joinStringArray(senderTokens);
+        // string memory receiverCapabilityToken = joinStringArray(receiverTokens);
 
         iotNodes[nodeId] = IoTNode({
             nodeName: nodeName,
             nodeType: nodeType,
             publicKey: publicKey,
             isRegistered: true,
-            senderCapabilityToken: senderCapabilityToken,
-            receiverCapabilityToken: receiverCapabilityToken,
+            // senderCapabilityToken: senderCapabilityToken,
+            // receiverCapabilityToken: receiverCapabilityToken,
             registeredBy: registeredBy,
             registeredByNodeType: regByNodeType,
             nodeSignature: nodeSignature
@@ -85,8 +93,8 @@ contract NodeRegistry {
             nodeName,
             nodeType,
             publicKey,
-            senderCapabilityToken,
-            receiverCapabilityToken,
+            // senderCapabilityToken,
+            // receiverCapabilityToken,
             registeredBy,
             regByNodeType,
             nodeSignature
@@ -108,8 +116,8 @@ contract NodeRegistry {
             NodeType,
             string memory,
             bool,
-            string memory,
-            string memory,
+            // string memory,
+            // string memory,
             address,
             string memory,
             NodeType
@@ -129,8 +137,8 @@ contract NodeRegistry {
             node.nodeType,
             node.publicKey,
             node.isRegistered,
-            node.senderCapabilityToken,
-            node.receiverCapabilityToken,
+            // node.senderCapabilityToken,
+            // node.receiverCapabilityToken,
             node.registeredBy,
             node.nodeSignature,
             node.registeredByNodeType
@@ -165,7 +173,26 @@ contract NodeRegistry {
 
         return false;
     }
-    
+
+    // function issueToken(string memory SenderNodeSignature, string memory receiverNodeSignature) public view returns (string memory, string memory) {
+    //     string memory senderNodeId = nodeSignatureToNodeId[SenderNodeSignature];
+    //     string memory receiverNodeId = nodeSignatureToNodeId[receiverNodeSignature];
+
+    //     require(
+    //         iotNodes[senderNodeId].isRegistered &&
+    //         keccak256(abi.encodePacked(iotNodes[senderNodeId].nodeSignature)) == keccak256(abi.encodePacked(SenderNodeSignature)),
+    //         "Sender node not found or invalid signature"
+    //     );
+
+    //     require(
+    //         iotNodes[receiverNodeId].isRegistered &&
+    //         keccak256(abi.encodePacked(iotNodes[receiverNodeId].nodeSignature)) == keccak256(abi.encodePacked(receiverNodeSignature)),
+    //         "Receiver node not found or invalid signature"
+    //     );
+
+    //     return (iotNodes[senderNodeId].senderCapabilityToken, iotNodes[receiverNodeId].receiverCapabilityToken);
+    // }
+
     // Updated generateToken: returns arrays of strings.
     function generateToken(NodeType nodeType, NodeType registeredByNodeType) 
         internal pure returns (string[] memory, string[] memory) 
@@ -182,6 +209,7 @@ contract NodeRegistry {
             registeredByNodeTypePermissions = new string[](2);
             registeredByNodeTypePermissions[0] = "Cloud:READ";
             registeredByNodeTypePermissions[1] = "Cloud:EXECUTE";
+
         } else if (nodeType == NodeType.Edge && registeredByNodeType == NodeType.Fog) {
             nodeTypePermissions = new string[](3);
             nodeTypePermissions[0] = "Edge:READ";
@@ -210,9 +238,9 @@ contract NodeRegistry {
             registeredByNodeTypePermissions[1] = "Edge:EXECUTE";
         } else {
             nodeTypePermissions = new string[](1);
-            nodeTypePermissions[0] = "INVALID_TOKEN";
+            nodeTypePermissions[0] = string(abi.encodePacked("INVALID_TOKEN: NO POLICY ASSIGNED FOR ", nodeType, " to ", registeredByNodeType));
             registeredByNodeTypePermissions = new string[](1);
-            registeredByNodeTypePermissions[0] = "INVALID_TOKEN";
+            registeredByNodeTypePermissions[0] = string(abi.encodePacked("INVALID_TOKEN: NO POLICY ASSIGNED FOR ", registeredByNodeType, " to ", nodeType));
         }
 
         return (nodeTypePermissions, registeredByNodeTypePermissions);

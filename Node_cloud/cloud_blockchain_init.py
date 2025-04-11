@@ -42,6 +42,24 @@ class BlockchainInit:
             "private_key": account._private_key.hex(),  # Store as hex
             "address": account.address
         }
+    
+
+    #---------------------Update Validators----------------------------
+
+    def start_validator_event_listener():
+        try:
+            process = subprocess.Popen(
+                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "listenForValidatorProposals"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            print("Validator proposal event listener started (running in background)...")
+            return process  # You can keep a reference to manage the process (e.g., stop later)
+        except Exception as e:
+            print(" Failed to start event listener:", e)
+            return None  
 
     #---------------------Create QBFT config file----------------------------
     def create_qbft_file(self, num_prefunded_accounts, num_validators):

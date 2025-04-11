@@ -44,6 +44,10 @@ restart_blockchain() {
     start_blockchain
 }
 
+listen_for_validator_updates(){
+    $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_validator_event_listener
+}
+
 initialize_blockchain() {
     # Check if qbftConfigFile.json is present
 
@@ -257,6 +261,9 @@ case "$1" in
         ;;
     restart-blockchain)
         restart_blockchain
+        ;;
+    update-validators)
+        listen_for_validator_updates
         ;;
     init-blockchain)
         initialize_blockchain

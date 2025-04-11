@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import json
 import os
+import subprocess
 
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
@@ -125,7 +126,18 @@ class NodeRegistry:
             else:
                 print("No Enode received!")
 
-            print(f"Acknowledgment Processed for Node {node_id}") 
+            print(f"Acknowledgment Processed for Node {node_id}")
+            # Check if all required files exist
+
+            # Path to your shell script
+            script_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/start_fog_services.sh"
+
+            # Argument to pass
+            arg = "start-blockchain"
+
+            # Run the shell script with the argument
+            result = subprocess.run(["bash", script_path, arg], capture_output=True, text=True)
+            print(result.stdout)
             return jsonify({"status": "success", "message": "Acknowledgment received, files saved, and enode stored"}), 200
         
         

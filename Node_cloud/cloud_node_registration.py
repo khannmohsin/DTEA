@@ -4,7 +4,7 @@ from cloud_blockchain_init import BlockchainInit
 import json
 import os
 import subprocess
-
+import time
 from eth_keys import keys
 from eth_utils import keccak
 import re
@@ -217,7 +217,63 @@ class NodeRegistry:
             else:
                 print("Unexpected output:", output)
                 return False
+            
+    def checkValidator(self, node_Signature):
+        result = subprocess.run([
+            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "isValidator", node_Signature
+        ], capture_output=True, text=True)
+
+        output = result.stdout.strip()
+        if output == "true":
+            return True
+        else:
+            return False
         
+    def proposeValidator(self, address, add):
+        print("Lets check if the address is correct or not")
+        # print(address)
+        result = subprocess.run([
+            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js",
+            "proposeValidatorVote", address, add
+        ], capture_output=True, text=True)
+
+        output = result.stdout.strip()
+        print("Raw JS Output proposeValidatorVote:", output)
+
+        return output
+        
+    def emitValidatorProposalToChain(self, address):
+        result = subprocess.run([
+            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js",
+            "emitValidatorProposalToChain", address
+        ], capture_output=True, text=True)
+
+        output = result.stdout.strip()
+        print("Raw JS Output emitValidatorProposalToChain:", output)
+        return output
+        
+    def listenForValidatorProposal(self):
+        result = subprocess.run([
+            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js",
+            "listenForValidatorProposal"
+        ], capture_output=True, text=True)
+
+        output = result.stdout.strip()
+        print("Raw JS Output listenForValidatorProposal:", output)
+        return output
+
+    def get_all_validators(self):
+
+        result = subprocess.run([
+            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getValidatorsByBlockNumber"
+        ], capture_output=True, text=True)
+
+        output = result.stdout.strip()
+        # print("Raw JS Output getAllValidators:", output)
+
+        return output
+        
+
     def setup_routes(self):
         GENESIS_FILE_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json"
         NODE_REGISTRY_PATH = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
@@ -231,6 +287,7 @@ class NodeRegistry:
             check_smart_contract = self.check_smart_contract()
 
             if check_smart_contract:
+                print("Received Node Registration Request")
                 if self.check_smart_contract_deployment():
                     print("Received Node Registration Request")
                     # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
@@ -279,6 +336,48 @@ class NodeRegistry:
                         cloud_ack_sender = CloudAcknowledgementSender(FOG_NODE_URL, GENESIS_FILE_PATH, NODE_REGISTRY_PATH, BESU_RPC_URL)
                         response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
                         cloud_ack_sender.send_acknowledgment(node_id="Cloud")
+                        
+                        # Check if the node is a validator
+                        if self.checkValidator(data["signature"]):
+                            print("Node is a validator.\n")
+
+                            get_All_validators = self.get_all_validators()
+                            print("Current Available:", get_All_validators)
+
+                            print("...  Waiting For some time for the fog node to start the blockchain to proposing it as a validator.  ")
+                            time.sleep(60)
+
+                            # Propose the validator
+                            # print("Proposing the validator...")
+                            # response = self.proposeValidator(data["address"], "true")
+                            emitValidatorProposal = self.emitValidatorProposalToChain(data["address"])
+
+                            print("Emit Validator Proposal Response:", emitValidatorProposal)
+                            
+                            time.sleep(5)
+                            listenForValidatorProposal = self.listenForValidatorProposal()
+                            print("Listening for Validator Proposal Response:", listenForValidatorProposal)
+                            # print("Validator proposal response:", response)
+
+                            time.sleep(5)
+
+                            get_All_validators = self.get_all_validators()
+                            print("All Validators:", get_All_validators)
+                            while data["address"] not in get_All_validators:
+                                print("Validator is not added yet. Waiting for some time.")
+                                time.sleep(60)
+                                get_All_validators = self.get_all_validators()
+                                print("All Validators:", get_All_validators)
+                                return jsonify({"status": "error", "message": "Validator is not added yet. Waiting for some time."}), 500
+                            
+                            return jsonify({"status": "success", "message": "Validator is added to the blockchain."}), 200
+
+                            # Add the validator address to the JSON file
+                            # self.add_validator_address(data["address"])
+                        else:
+                            print("Node is not a validator.")
+
+
                         return response, 200                    
                     else:
                         print("Error in registering node on the blockchain:", message)
@@ -449,6 +548,5 @@ class NodeRegistry:
 
 if __name__ == "__main__":
     registry = NodeRegistry()
-    # registry.is_node_registered_js("FN-001")
     registry.run()
 

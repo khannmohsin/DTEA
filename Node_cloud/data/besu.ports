@@ -1,5 +1,5 @@
 #This file contains the ports used by the running instance of Besu. This file will be deleted after the node is shutdown.
-#Tue Apr 08 22:19:52 CEST 2025
+#Thu Apr 10 20:44:36 CEST 2025
 discovery=30303
 json-rpc=8545
 p2p=30303

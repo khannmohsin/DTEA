@@ -132,7 +132,7 @@ curl -X POST --data '{"jsonrpc":"2.0","method":"qbft_getPendingVotes","params":[
 curl -X POST --data '{
   "jsonrpc":"2.0",
   "method":"qbft_proposeValidatorVote",
-  "params":["0x89ffb92d07371391d599f12517b33d968d060977", true],
+  "params":["0xdf641b34498b81a41f3b3d5691e348efd6ea4972", true],
   "id":1
 }' http://localhost:8545
 
@@ -142,4 +142,4 @@ curl -X POST --data '{
   "method":"qbft_getValidatorsByBlockNumber",
   "params":["latest"],
   "id":1
-}' http://localhost:8547
+}' http://localhost:8545
