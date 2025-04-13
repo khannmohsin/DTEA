@@ -5,8 +5,12 @@ const path = require('path');
 const { get } = require("http");
 const { send, emit } = require("process");
 const web3 = new Web3("http://127.0.0.1:8545"); // Besu JSON-RPC
+const fetch = require("node-fetch");
+const networkId = Object.keys(contractJson.networks)[0];
+const contractAddress = contractJson.networks[networkId].address;
 
-const contractAddress = "0x2bD48779860D87F4111A59274F16a142D9519102"; // Replace with your contract address
+// console.log("Contract Address:", contractAddress);
+// const contractAddress = "0xEfe311B353970D74F503047dF4F15e93f2388717"; // Replace with your contract address
 // const account = "0x71C44C10e3A74133FA4330c3d17aA9DADB9bFE22"; // Replace with your account address
 // const privateKey = "def5be7c19dd1d6794b33240d36fa33dea3338d6e473011f47a3282e171326cd"; // Replace with your private key ETH account 
 
@@ -50,9 +54,7 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
                 event.data,
                 event.topics.slice(1)
             );
-            console.log(` Sender Capability Token: ${decodedEvent.senderCapabilityToken}`);
-            console.log(` Receiver Capability Token: ${decodedEvent.receiverCapabilityToken}`);
-            console.log(` Node Signature: ${decodedEvent.nodeSignature}`);
+            console.log(`Node Signature: ${decodedEvent.nodeSignature}`);
         }
 
     } catch (error) {
@@ -61,14 +63,17 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
 }
 
 // registerNode(
-//     "FN-010",
+//     "FG-001",
 //     "Fog Nde 1",
 //     "Fog",
-//     "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-//     "e39035c0c9ae46f48fdd6325f12787c862a78daf",
-//     "Edge",
-//     "0x3434568998afd7ef1234567890abcde71234567890abcdef1434567890abcdef"
+//     "0x347cbb5f0239e50ee6e6be82c74424c8650f4f41b993008fd18fab6179e2f08305acc3db408f5af8b002875b02bc9f292f18ee1a014558843c11e1d4fe588ba9",
+//     "0x2ab98b2fd848a938dffb34ee5a4a08f67e704700",
+//     "Cloud",
+//     "0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001"
 // );
+
+// Fog: Sig: 0x6634598998aed7ef1734567890abcde71234567891abcdef1434567890abcdef Add: e59035c0c9ae46f49fdd6325f12787c862a78eaf
+// Cloud : Sig: 0x8834598998aed7ef1734567890abcde71234567891abcdef1434567890abcdef Add: e98035c0c9ae46f49fdd6325f12787c862a78eaf
 
 async function isNodeRegistered(nodeSignature) {
     try {
@@ -81,39 +86,56 @@ async function isNodeRegistered(nodeSignature) {
     }
 }
 
-// isNodeRegistered("0x435c1648ffa09c0927d7cac44ca80180eb1a4f2eaf33c5fae1b00654fd4c7d4c5050a4a2956dc20ff68f3a9fcd18109da00daa2f952fe63fb6628b0efb9d1ac001");
+// isNodeRegistered("0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001");
 
-
-
-async function sendConsensusTriggerTransaction() {
+async function emitValidatorProposalToChain(validatorAddress) {
     try {
-        const latestNonce = await web3.eth.getTransactionCount(account, 'pending');
+        const txData = contract.methods.proposeValidator(validatorAddress).encodeABI();
+        const nonce = await web3.eth.getTransactionCount(account, "pending");
+
         const tx = {
-            from: "0xC0FAee0CBf5ff0139B0DBE121626f837EE86725c",
-            to: "0xC0FAee0CBf5ff0139B0DBE121626f837EE86725c", // send to self
-            value: '0x0',
-            gas: 21000,
-            gasPrice: '3000',
-            nonce: latestNonce
+            from: account,
+            to: contractAddress,
+            gas: 100000,
+            gasPrice: "0",
+            nonce: nonce,
+            data: txData
         };
 
         const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
         const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-        console.log("Dummy Tx Sent. Hash:", receipt.transactionHash);
+
+        console.log("Tx Sent. Hash:", receipt.transactionHash);
+
+        // 👇 Extract the emitted event from receipt logs
+        const decodedEvent = receipt.logs
+            .map(log => {
+                try {
+                    return web3.eth.abi.decodeLog(
+                        contractJson.abi.find(e => e.name === "ValidatorProposed").inputs,
+                        log.data,
+                        log.topics.slice(1)
+                    );
+                } catch (e) {
+                    return null;
+                }
+            })
+            .find(e => e !== null);
+
+        if (decodedEvent) {
+            console.log("ValidatorProposed Event:");
+            console.log("Proposed By:", decodedEvent.proposedBy);
+            console.log("Validator:", decodedEvent.validator);
+        } else {
+            console.log("No ValidatorProposed event found in logs.");
+        }
+
     } catch (error) {
-        console.error("Error sending dummy transaction:", error);
+        console.error("Error emitting validator proposal:", error);
     }
 }
 
-// sendConsensusTriggerTransaction();
-
-// sendDummyTransaction();
-
-
-// isNodeRegistered("0x1234567890abcdef1234567890abcee71234567890abcdef1434567890abcdef");
-/**
- * Get Details of a Node
- */
+// emitValidatorProposalToChain("0x9ec1a623566117361454b0ef2b676115ef12991b");
 
 async function getNodeDetails(nodeSignature) {
     try {
@@ -126,11 +148,11 @@ async function getNodeDetails(nodeSignature) {
             nodeType: result[2].toString(),
             publicKey: result[3],
             isRegistered: result[4],
-            senderCapabilityToken: result[5],
-            receiverCapabilityToken: result[6],
-            registeredBy: result[7],
-            nodeSignature: result[8], // ✅ Includes signature
-            registeredByNodeType: result[9].toString(),
+            // senderCapabilityToken: result[5],
+            // receiverCapabilityToken: result[6],
+            registeredBy: result[5],
+            nodeSignature: result[6],
+            registeredByNodeType: result[7].toString(),
         };
         console.log(JSON.stringify(details));
     } catch (error) {
@@ -141,9 +163,223 @@ async function getNodeDetails(nodeSignature) {
     }
 }
 
+async function getNodeDetailsByAddress(nodeAddress) {
+    try {
+        const details = await contract.methods.getNodeDetailsByAddress(nodeAddress).call();
 
-// getNodeDetails("0x1234569870abddef1234567890abcde71234567890abcdef1434567890abcdef");
+        console.log("📦 Node Details:");
+        console.log("🆔 Node ID:", details[0]);
+        console.log("🏷️ Node Name:", details[1]);
+        console.log("🔧 Node Type (Enum Index):", details[2]); // You may map this index to the actual string
+        console.log("🔑 Public Key:", details[3]);
+        console.log("✅ Is Registered:", details[4]);
+        console.log("📝 Registered By (address):", details[5]);
+        console.log("🧾 Node Signature:", details[6]);
+        console.log("📎 Registered By Node Type (Enum Index):", details[7]);
+    } catch (error) {
+        console.error("❌ Error fetching node details by address:", error.message);
+    }
+}
 
+// getNodeSignatureBySender();
+// Example call
+// getNodeDetailsByAddress("0xcd472fdc3ef798c933c2e3d2123a20861bbded27");
+
+
+// getNodeDetails("0x4c5b8a9f63d68367dd7629426a5b50851876963af842f75c73fb0d19e85a02ba277c889977a892fafcfc401ec5a2bcc242555dd0deb87a0b80b07d460723de4701");
+
+
+async function issueCapabilityToken(fromNodeSignature, toNodeSignature) {
+    try {
+        const txData = contract.methods.issueToken(fromNodeSignature, toNodeSignature).encodeABI();
+
+        const nonce = await web3.eth.getTransactionCount(account, 'pending');
+
+        const tx = {
+            from: account,
+            to: contractAddress,
+            gas: 300000,
+            gasPrice: '0',
+            nonce,
+            data: txData
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log("Token issued. Tx Hash:", receipt.transactionHash);
+
+        // Decode the TokenIssued event
+        const event = receipt.logs.find(log => log.address.toLowerCase() === contractAddress.toLowerCase());
+        if (event) {
+            const decoded = web3.eth.abi.decodeLog(
+                contractJson.abi.find(e => e.name === "TokenIssued").inputs,
+                event.data,
+                event.topics.slice(1)
+            );
+            console.log("TokenIssued Event:");
+            console.log(" From Signature:", decoded.fromNodeSignature);
+            console.log(" To Signature:", decoded.toNodeSignature);
+            console.log(" Policy:", decoded.policy);
+            console.log(" Issued At:", new Date(Number(decoded.issuedAt) * 1000).toISOString());
+        }
+
+    } catch (error) {
+        console.error("Error issuing token:", error.message);
+    }
+}
+
+// Example call
+// issueCapabilityToken("0x953dea79f6aa249e3c52b7b08c5467b097dd5422de8cb087a60163583ee092ae2486ada45e799ee53e98a6f71fb7719aa7a86b18eee4177f56e1b3159b52820f00",
+//     "0x45679b79df3b91f29406fe15a19a8c04d473a0ba6b160b342cb3415c1cf910e06b3fecd0bdf8fc51c88c90916f68d982d5a1d8414592d0d72e43762ef40d3d4400");
+
+async function callTokenCheck(fromNodeSignature) {
+    try {
+        const txData = contract.methods.issueToken(fromNodeSignature).encodeABI();
+        const nonce = await web3.eth.getTransactionCount(account, "pending");
+
+        const tx = {
+            from: account,
+            to: contractAddress,
+            data: txData,
+            gas: 200000,
+            gasPrice: "0",
+            nonce
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log("✅ Tx Sent. Hash:", receipt.transactionHash);
+
+        // Decode the TokenChecked event
+        const eventAbi = contractJson.abi.find(e => e.name === "TokenChecked");
+        const eventLog = receipt.logs.find(log => log.topics[0] === web3.eth.abi.encodeEventSignature(eventAbi));
+
+        if (eventLog) {
+            const decoded = web3.eth.abi.decodeLog(
+                eventAbi.inputs,
+                eventLog.data,
+                eventLog.topics.slice(1)
+            );
+
+            console.log("📡 TokenChecked Event:");
+            console.log(" From Node Signature:", decoded.fromNodeSignature);
+            console.log(" To Node ID:", decoded.toNodeSignature); // `toNodeId` passed as second arg in event
+        } else {
+            console.log("⚠️ TokenChecked event not found in logs.");
+        }
+
+    } catch (err) {
+        console.error("❌ Error calling issueToken:", err.message);
+    }
+}
+
+// Example call
+// callTokenCheck("0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001");
+
+
+// issueCapabilityToken("0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001");
+
+
+async function revokeCapabilityToken(fromNodeSignature, toNodeSignature) {
+    try {
+        const txData = contract.methods.revokeToken(fromNodeSignature, toNodeSignature).encodeABI();
+        const latestNonce = await web3.eth.getTransactionCount(account, 'pending');
+
+        const tx = {
+            from: account,
+            to: contractAddress,
+            gas: 200000,
+            gasPrice: '0',
+            nonce: latestNonce,
+            data: txData
+        };
+
+        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+
+        console.log("Token revoked. Tx Hash:", receipt.transactionHash);
+
+        // Decode and log event
+        const log = receipt.logs.find(log => log.address.toLowerCase() === contractAddress.toLowerCase());
+        if (log) {
+            const decoded = web3.eth.abi.decodeLog(
+                contractJson.abi.find(e => e.name === "TokenRevoked").inputs,
+                log.data,
+                log.topics.slice(1)
+            );
+            console.log("TokenRevoked Event:");
+            console.log("From Signature:", decoded.fromNodeSignature);
+            console.log("To Signature:", decoded.toNodeSignature);
+        }
+    } catch (error) {
+        console.error("Error revoking token:", error.message);
+    }
+}
+
+// Example call
+// revokeCapabilityToken("0x47adfad83202c4e3591964405c8ccdaaf449443a3c02177d53f5b3351014624203156c4cfe0f94880ed0942c9100c754c1b841888ce5d5fc2a623790728072db01", 
+//     "0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001");
+
+
+async function getCapabilityToken(fromNodeSignature, toNodeSignature) {
+    try {
+        const token = await contract.methods.getToken(fromNodeSignature, toNodeSignature).call();
+
+        console.log("Capability Token Info:");
+        console.log("Policy:", token.policy);
+        console.log("Issued At (Unix):", token.issuedAt.toString());
+        console.log("Issued At (UTC):", new Date(Number(token.issuedAt) * 1000).toISOString());
+        console.log("Is Issued:", token.isIssued);
+        console.log("Is Revoked:", token.isRevoked);
+    } catch (error) {
+        console.error("Error fetching token:", error.message);
+    }
+}
+
+async function checkCapabilityToken(fromNodeSignature, toNodeSignature) {
+    try {
+        const isValid = await contract.methods.checkToken(fromNodeSignature, toNodeSignature).call();
+        console.log(isValid); 
+    } catch (error) {
+        console.error("Error checking token:", error.message);
+    }
+}
+
+// checkCapabilityToken("0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001", 
+//     "0x156f006847e530ac8b4e42d4676d3a3555abdc82fb54816376dd16930ef904872591bfbf5980aee01912464cb927d457b82639d6037db6a105452f0b731b6d5700"
+// );
+
+
+// getCapabilityToken("0x47adfad83202c4e3591964405c8ccdaaf449443a3c02177d53f5b3351014624203156c4cfe0f94880ed0942c9100c754c1b841888ce5d5fc2a623790728072db01", 
+//     "0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001");
+    
+
+async function checkTokenExpiry(fromNodeSignature, toNodeSignature, validityPeriodInSeconds) {
+    try {
+        const isExpired = await contract.methods
+            .isTokenExpired(fromNodeSignature, toNodeSignature, validityPeriodInSeconds)
+            .call();
+
+        // console.log(`Token Expiry Check`);
+        // console.log(`→ From: ${fromNodeSignature}`);
+        // console.log(`→ To: ${toNodeSignature}`);
+        // console.log(`→ Validity Period: ${validityPeriodInSeconds} seconds`);
+        console.log(`${isExpired}`);
+    } catch (error) {
+        console.error("Error checking token expiry:", error.message);
+    }
+}
+
+// checkTokenExpiry("0x953dea79f6aa249e3c52b7b08c5467b097dd5422de8cb087a60163583ee092ae2486ada45e799ee53e98a6f71fb7719aa7a86b18eee4177f56e1b3159b52820f00",
+//     "0x45679b79df3b91f29406fe15a19a8c04d473a0ba6b160b342cb3415c1cf910e06b3fecd0bdf8fc51c88c90916f68d982d5a1d8414592d0d72e43762ef40d3d4400", "30000");
+
+
+
+
+// checkTokenExpiry("0x47adfad83202c4e3591964405c8ccdaaf449443a3c02177d53f5b3351014624203156c4cfe0f94880ed0942c9100c754c1b841888ce5d5fc2a623790728072db01", 
+//     "0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001", "30");
 
 async function isValidator(nodeSignature) {
     try {
@@ -156,7 +392,8 @@ async function isValidator(nodeSignature) {
     }
 }
 
-// isValidator("0x9d4222e21bd4e24136f97d270efc1c4fe0bc8b7acbde1e063ad7fe7eaa77650f0c9c20b45210bd59da088c43b26b7a1181e86d0bf7ab0d62aefc584b2628b49c01");
+// isValidator("0x2ab98b2fd848a938dffb34ee5a4a08f67e704700");
+
 
 async function getAllTransactions() {
     let latestBlock = await web3.eth.getBlockNumber(); // Get latest block number
@@ -178,6 +415,8 @@ async function getAllTransactions() {
         }
     }
 }
+
+// getAllTransactions();
 
 async function checkIfDeployed(contractAddress) {
     try {
@@ -206,6 +445,7 @@ async function watchValidatorProposals() {
             console.log("Past Event:");
             console.log("   Proposed By:", event.returnValues.proposedBy);
             console.log("   Validator:", event.returnValues.validator);
+            console.log(event.returnValues.validator);
             console.log("   Tx Hash:", event.transactionHash);
         }
 
@@ -229,54 +469,7 @@ async function watchValidatorProposals() {
 
 // watchValidatorProposals();
 
-async function emitValidatorProposalToChain(validatorAddress) {
-    try {
-        const txData = contract.methods.proposeValidator(validatorAddress).encodeABI();
-        const nonce = await web3.eth.getTransactionCount(account, "pending");
 
-        const tx = {
-            from: account,
-            to: contractAddress,
-            gas: 100000,
-            gasPrice: "0",
-            nonce: nonce,
-            data: txData
-        };
-
-        const signedTx = await web3.eth.accounts.signTransaction(tx, privateKey);
-        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-
-        console.log("✅ Tx Sent. Hash:", receipt.transactionHash);
-
-        // 👇 Extract the emitted event from receipt logs
-        const decodedEvent = receipt.logs
-            .map(log => {
-                try {
-                    return web3.eth.abi.decodeLog(
-                        contractJson.abi.find(e => e.name === "ValidatorProposed").inputs,
-                        log.data,
-                        log.topics.slice(1)
-                    );
-                } catch (e) {
-                    return null;
-                }
-            })
-            .find(e => e !== null);
-
-        if (decodedEvent) {
-            console.log("🎯 ValidatorProposed Event:");
-            console.log("Proposed By:", decodedEvent.proposedBy);
-            console.log("Validator:", decodedEvent.validator);
-        } else {
-            console.log("No ValidatorProposed event found in logs.");
-        }
-
-    } catch (error) {
-        console.error("❌ Error emitting validator proposal:", error);
-    }
-}
-
-// emitValidatorProposalToChain("0x9ec1a623566117361454b0ef2b676115ef12991b");
 
 async function proposeValidatorVote(validatorAddress, add) {
     try {
@@ -300,6 +493,39 @@ async function proposeValidatorVote(validatorAddress, add) {
     }
 }
 
+
+
+async function getPeerCount(rpcUrl = "http://127.0.0.1:8545") {
+    const payload = {
+        jsonrpc: "2.0",
+        method: "net_peerCount",
+        params: [],
+        id: 1
+    };
+
+    try {
+        const response = await fetch(rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        if (data.result) {
+            const peerCount = parseInt(data.result, 16); // Convert hex to decimal
+            console.log(`${peerCount}`);
+            return peerCount;
+        } else {
+            console.error("Error in response:", data);
+            return 0;
+        }
+    } catch (err) {
+        console.error("Failed to fetch peer count:", err.message);
+        return 0;
+    }
+}
+
+// getPeerCount();
 
 // proposeValidatorVote("0x8ec1a623566117361454b0ef2b676115ef12991b", true);
 
@@ -343,8 +569,17 @@ module.exports = {
     isNodeRegistered,
     getNodeDetails,
     checkIfDeployed,
-    proposeValidatorVote
-    // listenForValidatorProposals
+    proposeValidatorVote,
+    isValidator,
+    getAllTransactions,
+    issueCapabilityToken,
+    revokeCapabilityToken,
+    getCapabilityToken,
+    checkTokenExpiry,
+    watchValidatorProposals,
+    emitValidatorProposalToChain,
+    getPeerCount,
+    checkCapabilityToken
 
 };
 
@@ -357,6 +592,41 @@ if (require.main === module) {
 
         if (command === "listenForValidatorProposals") {
             watchValidatorProposals();
+        }
+
+        if (command === "issueCapabilityToken") {
+            const fromNodeSignature = args[1];
+            const toNodeSignature = args[2];
+            await issueCapabilityToken(fromNodeSignature, toNodeSignature);
+        }
+
+        if (command === "checkCapabilityToken") {
+            const fromNodeSignature = args[1];
+            const toNodeSignature = args[2];
+            await checkCapabilityToken(fromNodeSignature, toNodeSignature);
+        }
+        if (command === "revokeCapabilityToken") {
+            const fromNodeSignature = args[1];
+            const toNodeSignature = args[2];
+            await revokeCapabilityToken(fromNodeSignature, toNodeSignature);
+        }
+        if (command === "getCapabilityToken") {
+            const fromNodeSignature = args[1];
+            const toNodeSignature = args[2];
+            await getCapabilityToken(fromNodeSignature, toNodeSignature);
+        }
+        if (command === "checkTokenExpiry") {
+            const fromNodeSignature = args[1];
+            const toNodeSignature = args[2];
+            const validityPeriodInSeconds = args[3];
+            await checkTokenExpiry(fromNodeSignature, toNodeSignature, validityPeriodInSeconds);
+        }
+        if (command === "getAllTransactions") {
+            await getAllTransactions();
+        }
+
+        if (command === "getPeerCount") {
+            const peerCount = await getPeerCount();
         }
 
         if (command === "isNodeRegistered") {

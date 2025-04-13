@@ -1,0 +1,8 @@
+{
+    "node_id": "FN-01",
+    "node_name": "FogNode",
+    "node_type": "Fog",
+    "public_key": "0x2c88db87f810441c501ffd5947052aa97949021d3ed2a8131c8488f15136eff1e1bf84460dacc8616dcaef0b470b613943bf52691cfc17a75b00aebb33852076",
+    "address": "0x9a2aea08a9e6f9e2130fae98522a9666a95a5676",
+    "signature": "0x45679b79df3b91f29406fe15a19a8c04d473a0ba6b160b342cb3415c1cf910e06b3fecd0bdf8fc51c88c90916f68d982d5a1d8414592d0d72e43762ef40d3d4400"
+}
