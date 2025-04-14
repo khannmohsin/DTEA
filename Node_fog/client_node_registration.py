@@ -11,7 +11,7 @@ from eth_utils import keccak
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
 
-    def __init__(self, besu_RPC_url, registering_node_url):
+    def __init__(self, besu_RPC_url):
         """Initialize with the JSON file storing node data and set up Flask."""
         self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/"
         self.data_path = os.path.join(self.root_path, "data/")
@@ -21,8 +21,10 @@ class NodeRegistry:
         self.node_registry_path = os.path.join(self.data_path, "NodeRegistry.json")
         self.prefunded_keys_file = os.path.join(self.data_path, "prefunded_keys.json")
         self.interact_file_path = os.path.join(self.root_path, "interact.js")
-        self.besu_RPC_url = "http://127.0.0.1:8545"
-        self.registering_node_url = "http://127.0.0.1:5001" 
+        self.besu_RPC_url = besu_RPC_url
+        # self.registering_node_url = registering_node_url
+        # self.besu_RPC_url = "http://127.0.0.1:8545"
+        # self.registering_node_url = "http://127.0.0.1:5001" 
         # self.filename = filename
         # self.nodes = self.load_nodes()
         self.app = Flask(__name__)
@@ -398,7 +400,7 @@ class NodeRegistry:
                     # Register the node on the blockchain
                     status, message, raw_output = self.register_node_on_chain(
                         data["node_id"], data["node_name"], data["node_type"], data["public_key"],
-                        data["address"], "Cloud", data["signature"]
+                        data["address"], "Cloud", data["node_url"], data["signature"]
                     )
 
                     # print(status, message, raw_output)
@@ -422,7 +424,7 @@ class NodeRegistry:
 
                         print(f"Sending acknowledgment to the Fog Node with ID: {data['node_id']}")
 
-                        cloud_ack_sender = AcknowledgementSender(self.registering_node_url, self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
+                        cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
                         response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
                         cloud_ack_sender.send_acknowledgment(node_id="Cloud")
 

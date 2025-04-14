@@ -4,16 +4,16 @@ import re
 class AcknowledgementSender:
     """Sends acknowledgment, enode, and required files to the Fog Node."""
 
-    def __init__(self, fog_node_url, genesis_file, node_registry_file, besu_rpc_url, prefunded_keys_file):
+    def __init__(self, registering_node_url, genesis_file, node_registry_file, besu_rpc_url, prefunded_keys_file):
         """
         Initializes the Cloud Node Acknowledgment sender.
 
-        :param fog_node_url: The Fog Node API endpoint for acknowledgment.
+        :param registering_node_url: The Fog Node API endpoint for acknowledgment.
         :param genesis_file: Path to the genesis file.
         :param node_registry_file: Path to the node registry file.
         :param besu_rpc_url: Besu JSON-RPC URL to fetch enode.
         """
-        self.fog_node_url = fog_node_url
+        self.registering_node_url = registering_node_url
         self.genesis_file = genesis_file
         self.node_registry_file = node_registry_file
         self.besu_rpc_url = besu_rpc_url
@@ -68,7 +68,7 @@ class AcknowledgementSender:
         }
 
         try:
-            response = requests.post(f"{self.fog_node_url}/acknowledgement", data=data, files=files)
+            response = requests.post(f"{self.registering_node_url}/acknowledgement", data=data, files=files)
 
             if response.status_code == 200:
                 print(f"Acknowledgment sent successfully to Node {node_id} with enode: {enode_id}")

@@ -3,11 +3,16 @@
 # Set Python Virtual Environment and Paths
 PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/python"
 
+
+# Network Configuration
+FLASK_PORT=5001
+NODE_URL=http://127.0.0.1:$FLASK_PORT
+BESU_RPC_URL=http://127.0.0.1:8546
+
 # Define paths to Python scripts
 ROOT_PATH="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog"
 BLOCKCHAIN_SCRIPT="$ROOT_PATH/client_blockchain_init.py"
 FLASK_SCRIPT="$ROOT_PATH/client_node_registration.py"
-FLASK_PORT=5001
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
 
 # ------------------------------------------------Main Functions------------------------------------------------
@@ -15,7 +20,7 @@ NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
 # **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {
     echo " Starting Cloud Node Flask API..."
-    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT\""
+    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL\""
 }
 
 initialize_chain_client() {
@@ -110,7 +115,7 @@ node_registration_request() {
         echo "Key file not found. Initialize blockchain first."
     else
         echo "Key file found. Continuing with registration..."
-        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$registration_url" "$key_path"
+        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$registration_url" "$key_path" "$NODE_URL"
     fi
 }
 

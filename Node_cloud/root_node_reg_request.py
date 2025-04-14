@@ -10,21 +10,22 @@ from eth_keys import keys  # <-- Added for signing
 from eth_utils import keccak
 
 class Node:
-    def __init__(self, node_id, node_name, node_type, cloud_url, key_path):
+    def __init__(self, node_id, node_name, node_type, registration_url, key_path, node_url):
         """
         Initialize the Node with its ID, Name, Type, and Cloud API URL.
 
         :param node_id: Unique identifier for the node
         :param node_name: Human-readable name for the node
         :param node_type: Type of node (sensor, edge, fog, cloud, actuator)
-        :param cloud_url: API endpoint of the cloud server for registration
+        :param registration_url: API endpoint of the registration server for registration
         :param key_path: Path to the public key file
         """
         self.node_id = node_id
         self.node_name = node_name
         self.node_type = node_type  # Generalized for any node type
-        self.cloud_url = cloud_url  # Cloud Node API URL
+        self.registration_url = registration_url  # Cloud Node API URL
         self.public_key = self.load_public_key(key_path)  # Load Public Key from file
+        self.node_url = node_url  # URL of the node
         self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/"
         self.private_key =  os.path.join(self.root_path, "data/key.priv")
         self.address = self.get_address()  # Get the address of the node
@@ -81,13 +82,14 @@ class Node:
             "node_type": self.node_type,  # Node type added
             "public_key": self.public_key,
             "address": self.address,
+            "node_url": self.node_url,  # URL of the node
             "signature": self.sign_identity()
         }
         
         with open("node-details.json", "w") as json_file:
             json.dump(data, json_file, indent=4)
 
-        response = requests.post(f"{self.cloud_url}/register-node", json=data)
+        response = requests.post(f"{self.registration_url}/register-node", json=data)
         if response.status_code == 200:
             print(f"{self.node_type.capitalize()} Node {self.node_id} Registered Successfully as '{self.node_name}'!")
             print(f"Public Key Sent: {self.public_key}")
@@ -109,7 +111,7 @@ class Node:
         }
 
         """Read data from the accessed Node."""
-        response = requests.get(f"{self.cloud_url}/read", params=data)
+        response = requests.get(f"{self.registration_url}/read", params=data)
 
         try:
             if response.status_code == 200:
@@ -134,7 +136,7 @@ class Node:
             "signature": self.sign_identity()
         }
         """Transmit data to the Cloud Node."""
-        response = requests.post(f"{self.cloud_url}/transmit", params=data)
+        response = requests.post(f"{self.registration_url}/transmit", params=data)
 
         try:
             if response.status_code == 200:
@@ -159,7 +161,7 @@ class Node:
             "signature": self.sign_identity()
         }
         """Transmit data to the Cloud Node."""
-        response = requests.post(f"{self.cloud_url}/write", params=data)
+        response = requests.post(f"{self.registration_url}/write", params=data)
 
         try:
             if response.status_code == 200:
@@ -184,7 +186,7 @@ class Node:
             "signature": self.sign_identity()
         }
         """Execute a command on the Cloud Node."""
-        response = requests.post(f"{self.cloud_url}/execute", params=data)
+        response = requests.post(f"{self.registration_url}/execute", params=data)
 
         try:
             if response.status_code == 200:
@@ -205,7 +207,7 @@ class Node:
 
     # def execute_command(self):
     #     """Execute a command on the Cloud Node."""
-    #     response = requests.post(f"{self.cloud_url}/execute", json={"command": command})
+    #     response = requests.post(f"{self.registration_url}/execute", json={"command": command})
     #     if response.status_code == 200:
     #         print("Command Executed Successfully!")
     #     else:
@@ -213,7 +215,7 @@ class Node:
 
     # def write_data(self, data):
     #     """Write data to the Cloud Node."""
-    #     response = requests.post(f"{self.cloud_url}/write", json=data)
+    #     response = requests.post(f"{self.registration_url}/write", json=data)
     #     if response.status_code == 200:
     #         print("Data Written Successfully!")
     #     else:
@@ -226,47 +228,47 @@ if __name__ == "__main__":
 
         if command == "register":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py register <node_id> <node_name> <node_type> <cloud_url> <key_path>")
+                print("Usage: python fog_node.py register <node_id> <node_name> <node_type> <registration_url> <key_path>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path)
             node.register_node()
 
         elif command == "read":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py read <cloud_url>")
+                print("Usage: python fog_node.py read <registration_url>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path)
             data = node.read_data()
 
         elif command == "write":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py write <cloud_url> <data>")
+                print("Usage: python fog_node.py write <registration_url> <data>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path)
             node.write_data()
 
         elif command == "transmit":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py transmit <cloud_url> <data>")
+                print("Usage: python fog_node.py transmit <registration_url> <data>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path)
             node.transmit_data()
 
         elif command == "execute":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py execute <cloud_url> <data>")
+                print("Usage: python fog_node.py execute <registration_url> <data>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, cloud_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path)
             node.execute_command()
 
         else:
