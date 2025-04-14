@@ -6,8 +6,11 @@ PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/pyth
 
 # Network Configuration
 FLASK_PORT=5001
+BESU_PORT=8546
 NODE_URL=http://127.0.0.1:$FLASK_PORT
-BESU_RPC_URL=http://127.0.0.1:8546
+BESU_RPC_URL=http://127.0.0.1:$BESU_PORT
+P2P_PORT=30303
+
 
 # Define paths to Python scripts
 ROOT_PATH="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog"
@@ -42,7 +45,7 @@ start_blockchain() {
         exit 1
     fi
     echo "Starting Blockchain..."
-    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_blockchain_node\""
+    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_blockchain_node $P2P_PORT $BESU_PORT\""
     # $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_blockchain_node
 }
 

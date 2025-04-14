@@ -253,8 +253,9 @@ class BlockchainInit:
     #         print(f"Error extracting node address: {result.stderr}")
 
     #---------------------Start the blockchain node----------------------------
-    def start_blockchain_node(self):
+    def start_blockchain_node(self, p2p_port, rpc_http_port):
         enode_address = self.load_enode_address()
+        # 30304
         """Starts the Besu node using subprocess.Popen()"""
         try:
             print("Starting Besu node...")
@@ -265,12 +266,12 @@ class BlockchainInit:
                 "--node-private-key-file=" + self.private_key,
                 "--genesis-file=" + self.genesis_file,
                 "--bootnodes=" + enode_address,
-                "--p2p-port=30304",
+                "--p2p-port=" + str(p2p_port),
                 "--rpc-http-enabled",
                 "--rpc-http-api=ETH,NET,QBFT, WEB3",
                 "--host-allowlist=*",
                 "--rpc-http-cors-origins=all",
-                "--rpc-http-port=8546"],
+                "--rpc-http-port=" + str(rpc_http_port)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
