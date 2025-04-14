@@ -73,9 +73,7 @@ class Node:
         return signature.to_hex()
     
     
-    def register_with_cloud(self):
-
-    
+    def register_node(self):
 
         """Send Public Key & Metadata to Cloud API for Registration."""
         data = {
@@ -234,7 +232,7 @@ if __name__ == "__main__":
 
             node_id, node_name, node_type, cloud_url, key_path = sys.argv[2:]
             node = Node(node_id, node_name, node_type, cloud_url, key_path)
-            node.register_with_cloud()
+            node.register_node()
 
         elif command == "read":
             if len(sys.argv) != 7:

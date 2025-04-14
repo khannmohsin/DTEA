@@ -7,6 +7,7 @@ PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/pyth
 ROOT_PATH="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud"
 BLOCKCHAIN_SCRIPT="$ROOT_PATH/root_blockchain_init.py"
 FLASK_SCRIPT="$ROOT_PATH/root_node_registration.py"
+FLASK_PORT=5000
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/root_node_reg_request.py"
 
 # Define source and destination paths
@@ -25,14 +26,14 @@ initialize_blockchain() {
     # Check if qbftConfigFile.json is present
 
     echo "Initializing Blockchain Root..."
-    if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json" ]; then
+    if [ -f "$ROOT_PATH/qbftConfigFile.json" ]; then
         echo "qbftConfigFile.json is already present."
     else
         echo "Creating qbftConfigFile..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_qbft_file 3 1
     fi
 
-    if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/key.priv" ] && [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/key.pub" ]; then
+    if [ -f "$ROOT_PATH/data/key.priv" ] && [ -f "$ROOT_PATH/data/key.pub" ]; then
         echo "Key files are already present."
     else
         echo "Generating keys..."
@@ -40,15 +41,15 @@ initialize_blockchain() {
     fi
 
     # Check if genesis.json is present
-    if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json" ]; then
+    if [ -f "$ROOT_PATH/genesis/genesis.json" ]; then
         echo "genesis.json is already present."
     else
         echo "Generating genesis file..."
-        $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_genesis_file "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json"
+        $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_genesis_file "$ROOT_PATH/qbftConfigFile.json"
     fi
 
     # Check if validator_address.json is present
-    if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/validator_address.json" ]; then
+    if [ -f "$ROOT_PATH/genesis/validator_address.json" ]; then
         echo "validator_address.json is already present."
     else
         echo "Extracting the validator address..."
@@ -56,7 +57,7 @@ initialize_blockchain() {
     fi
 
     # Check if extraData.rlp is present
-    if [ -f "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/extraData.rlp" ]; then
+    if [ -f "$ROOT_PATH/genesis/extraData.rlp" ]; then
         echo "extraData.rlp is already present."
     else
         echo "Updating extra data in genesis file..."
@@ -92,10 +93,10 @@ listen_for_validator_updates(){
 reinitialize_blockchain() {
     # Remove the data directory
     echo "Reinitializing Blockchain Root and removing  data directory, genesis directory, qbftConfigFile, and prefunded_keys.json ..."
-    rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data"
-    rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis"
-    rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json"
-    rm -rf "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/prefunded_keys.json"
+    rm -rf "$ROOT_PATH/data"
+    rm -rf "$ROOT_PATH/genesis"
+    rm -rf "$ROOT_PATH/qbftConfigFile.json"
+    rm -rf "$ROOT_PATH/prefunded_keys.json"
 
     # Reinitialize the blockchain
     initialize_blockchain
@@ -115,11 +116,12 @@ self_register(){
     echo "Node Name: $node_name"
     local node_type="$3"
     echo "Node Type: $node_type"
-    local cloud_url="http://127.0.0.1:5000"
+    local root_url="http://127.0.0.1:$FLASK_PORT"
+    echo "Root URL: $root_url"
     local key_path="/$ROOT_PATH/data/key.pub"
+    echo "Key Path: $key_path"
 
     # Check if Flask is running
-    FLASK_PORT=5000
     if nc -z localhost "$FLASK_PORT"; then
         echo "Flask is already running on port $FLASK_PORT."
     else
@@ -140,15 +142,15 @@ self_register(){
         echo "Key file not found. Initialize blockchain first."
     else
         echo "Key file found. Continuing with registration..."
-        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$root_url" "$key_path"
     fi
 }
 
 node_read(){
     # Check if the correct number of arguments is provided
-    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
         exit 1
     fi
     # Extract arguments
@@ -158,18 +160,20 @@ node_read(){
     echo "Node Name: $node_name"
     local node_type="$3"
     echo "Node Type: $node_type"
-    local cloud_url="http://127.0.0.1:5000"
-    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+    local read_url="http://127.0.0.1:$4"
+    echo "Read URL: $read_url"
+    local key_path="$ROOT_PATH/data/key.pub"
+    echo "Key Path: $key_path"
 
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" read "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" read "$node_id" "$node_name" "$node_type" "$read_url" "$key_path"
 }
 
 
 node_write(){
-    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
         exit 1
     fi
     # Extract arguments
@@ -179,18 +183,20 @@ node_write(){
     echo "Node Name: $node_name"
     local node_type="$3"
     echo "Node Type: $node_type"
-    local cloud_url="http://127.0.0.1:5000"
-    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+    local write_url="http://127.0.0.1:$4"
+    echo "Write URL: $write_url"
+    local key_path="$ROOT_PATH/data/key.pub"
+    echo "Key Path: $key_path"
 
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
 }
 
 
 node_transmit(){
-    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
         exit 1
     fi
     # Extract arguments
@@ -200,17 +206,19 @@ node_transmit(){
     echo "Node Name: $node_name"
     local node_type="$3"
     echo "Node Type: $node_type"
-    local cloud_url="http://127.0.0.1:5000"
-    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+    local transmit_url="http://127.0.0.1:$4"
+    echo "Transmit URL: $transmit_url"
+    local key_path="$ROOT_PATH/data/key.pub"
+
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
 
 node_execute(){
-    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
         exit 1
     fi
     # Extract arguments
@@ -220,10 +228,13 @@ node_execute(){
     echo "Node Name: $node_name"
     local node_type="$3"
     echo "Node Type: $node_type"
-    local cloud_url="http://127.0.0.1:5000"
-    local key_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
+    local execute_url="http://127.0.0.1:$4"
+    echo "Execute URL: $execute_url"
+    local key_path="$ROOT_PATH/data/key.pub"
+    echo "Key Path: $key_path"
+
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$cloud_url" "$key_path"
+    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }
 
@@ -281,16 +292,16 @@ case "$1" in
         self_register "$2" "$3" "$4"
         ;;
     read-data)
-        node_read "$2" "$3" "$4"
+        node_read "$2" "$3" "$4" "$5"
         ;;
     write-data)
-        node_write "$2" "$3" "$4"
+        node_write "$2" "$3" "$4" "$5"
         ;;
     transmit-data)
-        node_transmit "$2" "$3" "$4"
+        node_transmit "$2" "$3" "$4" "$5"
         ;;
     execute-data)
-        node_execute "$2" "$3" "$4"
+        node_execute "$2" "$3" "$4" "$5"
         ;;
     admin)
         smart_contract_deployment
@@ -315,7 +326,7 @@ case "$1" in
         ;;
     *)
         echo "Invalid operation: $1"
-        echo "Use './manage_cloud_node.sh help' for valid options."
+        echo "Use './start_root_services.sh help' for valid options."
         exit 1
         ;;
 esac
