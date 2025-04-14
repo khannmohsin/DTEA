@@ -10,7 +10,7 @@ FLASK_SCRIPT="$ROOT_PATH/client_node_registration.py"
 FLASK_PORT=5001
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
 
-
+# ------------------------------------------------Main Functions------------------------------------------------
 
 # **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {

@@ -25,9 +25,8 @@ class Node:
         self.node_type = node_type  # Generalized for any node type
         self.cloud_url = cloud_url  # Cloud Node API URL
         self.public_key = self.load_public_key(key_path)  # Load Public Key from file
-        self.private_key = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/key.priv"
-        # uncomment after testing
-        # self.address = "e39035c0c9ae42348fdd6325f12787c862a88dae"
+        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/"
+        self.private_key =  os.path.join(self.root_path, "data/key.priv")
         self.address = self.get_address()  # Get the address of the node
 
     def get_address(self):
@@ -275,11 +274,6 @@ if __name__ == "__main__":
     else:
         print("Usage: python fog_node.py <command> [arguments...]")
 
-    # cloud_api_url = "http://127.0.0.1:5000"  # Update with actual Cloud Node IP
-    # key_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.pub"
-    # # Example: Register a Fog Node
-    # fog_node = Node(node_id="FOG-001", node_name="FogDevice-001", node_type="Fog", cloud_url=cloud_api_url, key_path=key_path)
-    # fog_node.register_with_cloud()
 
 
 

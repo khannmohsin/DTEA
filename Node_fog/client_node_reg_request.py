@@ -25,7 +25,8 @@ class Node:
         self.node_type = node_type  # Generalized for any node type
         self.cloud_url = cloud_url  # Cloud Node API URL
         self.public_key = self.load_public_key(key_path)  # Load Public Key from file
-        self.private_key = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/data/key.priv"
+        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/"
+        self.private_key =  os.path.join(self.root_path, "data/key.priv")
         self.address = self.get_address()  # Get the address of the node
 
     def get_address(self):

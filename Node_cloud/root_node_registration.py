@@ -1,26 +1,31 @@
 from flask import Flask, request, jsonify
-from Node_cloud.acknowledgement import AcknowledgementSender
+from acknowledgement import AcknowledgementSender
 import json
 import os
 import subprocess
 import time
+import sys
 from eth_keys import keys
 from eth_utils import keccak
 
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
 
-    def __init__(self):
+    def __init__(self, besu_RPC_url, registering_node_url):
         """Initialize with the JSON file storing node data and set up Flask."""
+        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/"
+        self.data_path = os.path.join(self.root_path, "data/")
+        self.genesis_files_path = os.path.join(self.root_path, "genesis/")
+        self.genesis_file_path = os.path.join(self.genesis_files_path, "genesis.json")
+        self.node_registry_path = os.path.join(self.data_path, "NodeRegistry.json")
+        self.prefunded_keys_file = os.path.join(self.data_path, "prefunded_keys.json")
+        self.interact_file_path = os.path.join(self.root_path, "interact.js")
+        self.besu_RPC_url = "http://127.0.0.1:8545"
+        self.registering_node_url = "http://127.0.0.1:5001" 
         # self.filename = filename
         # self.nodes = self.load_nodes()
         self.app = Flask(__name__)
         self.setup_routes()                
-        self.genesis_file_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/genesis/genesis.json"
-        self.node_registry_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
-        self.prefunded_keys_file = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/prefunded_keys.json"
-        self.besu_RPC_url = "http://127.0.0.1:8545"
-        self.registering_node_url = "http://127.0.0.1:5001" 
 
 
     def verify_node_identity(self, data):
@@ -56,7 +61,7 @@ class NodeRegistry:
     def register_node_on_chain(self, node_id, node_name, node_type, public_key, address, receiver_node_type, signature):
         try:
             result = subprocess.run([
-                "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "registerNode",
+                "node", self.interact_file_path, "registerNode",
                 node_id, node_name, node_type, public_key, address, receiver_node_type, signature
             ], capture_output=True, text=True)
 
@@ -75,7 +80,7 @@ class NodeRegistry:
     def is_node_registered_js(self, nodeSignature):
         try:
             result = subprocess.run(
-                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "isNodeRegistered", nodeSignature],
+                ["node", self.interact_file_path, "isNodeRegistered", nodeSignature],
                 capture_output=True,
                 text=True
             )
@@ -98,7 +103,7 @@ class NodeRegistry:
     def get_node_details_js(self, nodeSignature):
         try:
             result = subprocess.run(
-                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getNodeDetails", nodeSignature],
+                ["node", self.interact_file_path, "getNodeDetails", nodeSignature],
                 capture_output=True,
                 text=True
             )
@@ -195,9 +200,9 @@ class NodeRegistry:
     #     return {"status": "approved", "message": "Validator address added"}, 200
     
     def check_smart_contract(self):
-        node_registry_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
+        # node_registry_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/data/NodeRegistry.json"
 
-        if os.path.exists(node_registry_path):
+        if os.path.exists(self.node_registry_path):
             print("Node registry file exists. Smart contract can be checked onchain.")
             return True
         else:
@@ -207,7 +212,7 @@ class NodeRegistry:
         
     def check_smart_contract_deployment(self):
             result = subprocess.run([
-                "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "checkIfDeployed",
+                "node", self.interact_file_path, "checkIfDeployed",
             ], capture_output=True, text=True)
             
             output = result.stdout.strip()
@@ -224,7 +229,7 @@ class NodeRegistry:
             
     def checkValidator(self, node_Signature):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "isValidator", node_Signature
+            "node", self.interact_file_path, "isValidator", node_Signature
         ], capture_output=True, text=True)
 
         output = result.stdout.strip()
@@ -237,7 +242,7 @@ class NodeRegistry:
         print("Lets check if the address is correct or not")
         # print(address)
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js",
+            "node", self.interact_file_path,
             "proposeValidatorVote", address, add
         ], capture_output=True, text=True)
 
@@ -248,7 +253,7 @@ class NodeRegistry:
         
     def emitValidatorProposalToChain(self, address):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js",
+            "node", self.interact_file_path,
             "emitValidatorProposalToChain", address
         ], capture_output=True, text=True)
 
@@ -258,7 +263,7 @@ class NodeRegistry:
         
     def listenForValidatorProposal(self):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js",
+            "node", self.interact_file_path,
             "listenForValidatorProposal"
         ], capture_output=True, text=True)
 
@@ -269,7 +274,7 @@ class NodeRegistry:
     def get_all_validators(self):
 
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getValidatorsByBlockNumber"
+            "node", self.interact_file_path, "getValidatorsByBlockNumber"
         ], capture_output=True, text=True)
 
         output = result.stdout.strip()
@@ -279,7 +284,7 @@ class NodeRegistry:
     
     def get_peers(self):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getPeerCount"
+            "node", self.interact_file_path, "getPeerCount"
         ], capture_output=True, text=True)
 
         output = result.stdout.strip()
@@ -290,7 +295,7 @@ class NodeRegistry:
     def issue_capability_token(self, from_node, to_node):
 
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "issueCapabilityToken",
+            "node", self.interact_file_path, "issueCapabilityToken",
             from_node, to_node
         ], capture_output=True, text=True)
 
@@ -300,7 +305,7 @@ class NodeRegistry:
     
     def revoke_capability_token(self, from_node, to_node):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "revokeCapabilityToken",
+            "node", self.interact_file_path, "revokeCapabilityToken",
             from_node, to_node
         ], capture_output=True, text=True)
 
@@ -310,7 +315,7 @@ class NodeRegistry:
     
     def get_capability_token(self, from_node, to_node):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "getCapabilityToken",
+            "node", self.interact_file_path, "getCapabilityToken",
             from_node, to_node
         ], capture_output=True, text=True)
 
@@ -322,7 +327,7 @@ class NodeRegistry:
     
     def check_token_expiry(self, from_node, to_node, validity_period):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "checkTokenExpiry",
+            "node", self.interact_file_path, "checkTokenExpiry",
             from_node, to_node, validity_period
         ], capture_output=True, text=True)
 
@@ -337,7 +342,7 @@ class NodeRegistry:
     
     def check_token_availability(self, from_node, to_node):
         result = subprocess.run([
-            "node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "checkCapabilityToken",
+            "node", self.interact_file_path, "checkCapabilityToken",
             from_node, to_node
         ], capture_output=True, text=True)
 
@@ -348,6 +353,8 @@ class NodeRegistry:
         elif output == "false":
             # print("Capability token is not available.")
             return False
+        
+        
 
     def setup_routes(self):
         """Setup Flask API routes inside the class."""
@@ -814,19 +821,18 @@ class NodeRegistry:
 
 
 
-        # @self.app.route("/get-nodes", methods=["GET"])
-        # def get_nodes():
-        #     """Retrieve all registered nodes or filter by type."""
-        #     node_type = request.args.get("node_type")
-        #     nodes = self.get_nodes(node_type)
-        #     return jsonify(nodes), 200
-
     def run(self, host="0.0.0.0", port=5000):
         """Run the Flask application."""
         self.app.run(host=host, port=port)
 
 if __name__ == "__main__":
-    registry = NodeRegistry()
-    # check_token_availability = registry.check_token_availability("0x0998d949f2147f9cb61fcfb097f830a878de056833b57c66ad7d58810118a6855f8205fad664a2fe671daa83bfc0beaa049a52ff7f9d8467ea40c390592929a001", "0x156f006847e530ac8b4e42d4676d3a3555abdc82fb54816376dd16930ef904872591bfbf5980aee01912464cb927d457b82639d6037db6a105452f0b731b6d5700")
+    if len(sys.argv) != 3:
+        print("Usage: python node_registry.py <besu_RPC_url> <registering_node_url>")
+        sys.exit(1)
+    besu_RPC_url = sys.argv[1]
+    registering_node_url = sys.argv[2]
+    # Initialize the NodeRegistry with the provided arguments
+    registry = NodeRegistry(besu_RPC_url, registering_node_url)
     registry.run()
+
 

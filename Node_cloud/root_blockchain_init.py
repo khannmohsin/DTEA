@@ -307,12 +307,3 @@ if __name__ == "__main__":
             print(f"Error: Function '{method_name}' not found in BlockchainInit.")
     else:
         print("Usage: python blockchain_init.py <function_name> [arguments...]")
-
-
-    # blockchain_init = BlockchainInit()
-    # blockchain_init.create_qbft_file(num_prefunded_accounts=3, num_validators=1)
-    # blockchain_init.generate_keys()
-    # blockchain_init.create_genesis_file(qbft_config_path="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/qbftConfigFile.json")
-    # blockchain_init.update_genesis_file()
-    # blockchain_init.update_extra_data_in_genesis()
-    # blockchain_init.start_blockchain_node()
