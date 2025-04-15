@@ -60,6 +60,10 @@ class AcknowledgementSender:
             "node_id": node_id,
             "enode": enode_id  # Include enode in the acknowledgment data
         }
+        print(self.registering_node_url)
+        print(self.genesis_file)
+        print(self.node_registry_file)
+        print(self.prefunded_keys_file)
 
         files = {
             "genesis_file": open(self.genesis_file, "rb"),

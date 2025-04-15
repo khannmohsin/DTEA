@@ -18,7 +18,7 @@ class NodeRegistry:
         self.genesis_files_path = os.path.join(self.root_path, "genesis/")
         self.genesis_file_path = os.path.join(self.genesis_files_path, "genesis.json")
         self.node_registry_path = os.path.join(self.data_path, "NodeRegistry.json")
-        self.prefunded_keys_file = os.path.join(self.data_path, "prefunded_keys.json")
+        self.prefunded_keys_file = os.path.join(self.root_path, "prefunded_keys.json")
         self.interact_file_path = os.path.join(self.root_path, "interact.js")
         self.besu_RPC_url = besu_RPC_url
         # self.registering_node_url = registering_node_url
@@ -400,7 +400,7 @@ class NodeRegistry:
                     # Register the node on the blockchain
                     status, message, raw_output = self.register_node_on_chain(
                         data["node_id"], data["node_name"], data["node_type"], data["public_key"],
-                        data["address"], "Cloud", data["node_url"], data["signature"]
+                        data["address"], "Cloud", data["signature"]
                     )
 
                     # print(status, message, raw_output)
@@ -423,6 +423,12 @@ class NodeRegistry:
                             return jsonify({"status": "success", "message": f"Node {data['address']} is already registered as a validator."}), 200
 
                         print(f"Sending acknowledgment to the Fog Node with ID: {data['node_id']}")
+
+                        # print(data["node_url"])
+                        # print(self.genesis_file_path)
+                        # print(self.node_registry_path)
+                        # print(self.besu_RPC_url)
+                        # print(self.prefunded_keys_file)
 
                         cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
                         response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
@@ -823,7 +829,7 @@ class NodeRegistry:
 
 
 
-    def run(self, host="0.0.0.0", port=5000):
+    def run(self, host, port):
         """Run the Flask application."""
         self.app.run(host=host, port=port)
 
@@ -832,9 +838,11 @@ if __name__ == "__main__":
         print("Usage: python node_registry.py <besu_RPC_url> <registering_node_url>")
         sys.exit(1)
     besu_RPC_url = sys.argv[1]
-    registering_node_url = sys.argv[2]
+    print("RPC URL:", besu_RPC_url)
+    port = sys.argv[2]
+    print("Port:", port)
     # Initialize the NodeRegistry with the provided arguments
-    registry = NodeRegistry(besu_RPC_url, registering_node_url)
-    registry.run()
+    registry = NodeRegistry(besu_RPC_url)
+    registry.run("0.0.0.0", port)
 
 

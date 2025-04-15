@@ -28,7 +28,7 @@ DESTINATION_DIR="$ROOT_PATH/data"
 # **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {
     echo " Starting Cloud Node Flask API..."
-    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL\"" 
+    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL $FLASK_PORT\"" 
 }
 
 initialize_blockchain() {
@@ -115,7 +115,7 @@ self_register(){
     # Check if the correct number of arguments is provided
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type>"
+        echo "Usage: ./start_root_services register <node_id> <node_name> <node_type>"
         exit 1
     fi
     # Extract arguments
@@ -267,10 +267,14 @@ smart_contract_deployment() {
 }
 
 
+# **Function to Show Help Message**
+
+
+
 # Check if the user provided an operation
 if [ "$#" -lt 1 ]; then
     echo "Error: No operation specified"
-    show_help
+    echo "Usage: $0 help"
     exit 1
 fi
 
@@ -319,20 +323,21 @@ case "$1" in
     help)
         echo "Usage: $0 <operation> [args]"
         echo "Operations:"
-        echo "  start-flask            Start the Flask API"
-        echo "  init-chain-root        Initialize the blockchain root"
-        echo "  start-chain-root       Start the blockchain root"
-        echo "  stop-chain-root        Stop the blockchain root"
-        echo "  restart-chain-root     Restart the blockchain root"
-        echo "  update-validators      Listen for validator updates"
-        echo "  reinit-chain-root      Reinitialize the blockchain root"
-        echo "  self-register <node_id> <node_name> <node_type>  Self-register a node"
-        echo "  read-data <node_id> <data_key> <data_value>     Read data from a node"
-        echo "  write-data <node_id> <data_key> <data_value>    Write data to a node"
-        echo "  transmit-data <node_id> <data_key> <data_value> Transmit data to a node"
-        echo "  execute-data <node_id> <data_key> <data_value>  Execute data on a node"
-        echo "  admin                  Deploy the smart contract"
-        echo "  help                   Show this help message"
+        echo "  start-flask             Start the Flask API"
+        echo "  init-chain-root         Initialize the blockchain root"
+        echo "  start-chain-root        Start the blockchain root"
+        echo "  stop-chain-root         Stop the blockchain root"
+        echo "  restart-chain-root      Restart the blockchain root"
+        echo "  update-validators       Listen for validator updates"
+        echo "  reinit-chain-root       Reinitialize the blockchain root"
+        echo "  self-register           Self-register a node"
+        echo "  read-data               Read data from a node"
+        echo "  write-data              Write data to a node"
+        echo "  transmit-data           Transmit data to a node"
+        echo "  execute-data            Execute data on a node"
+        echo "  admin                   Deploy the smart contract"
+        echo "  help                    Show this help message"
+        echo ""
         ;;
     *)
         echo "Invalid operation: $1"

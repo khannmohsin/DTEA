@@ -23,7 +23,7 @@ NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
 # **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {
     echo " Starting Cloud Node Flask API..."
-    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL\""
+    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL $FLASK_PORT\"" 
 }
 
 initialize_chain_client() {
@@ -219,7 +219,7 @@ node_execute(){
 # Check if the user provided an operation
 if [ "$#" -lt 1 ]; then
     echo "Error: No operation specified"
-    show_help
+    echo "Usage: $0 help"
     exit 1
 fi
 
@@ -267,28 +267,24 @@ case "$1" in
         echo "Usage: $0 <operation> [args]"
         echo ""
         echo "Available operations:"
-        echo "  start-flask         Start the Flask API for cloud node registration"
-        echo "  init-chain-client   Initialize the chain client (generate keys, create genesis, extra data)"
-        echo "  start-chain-client  Start the chain client"
-        echo "  stop-chain-client   Stop the chain client"
-        echo "  restart-chain-client Restart the chain client"
-        echo "  update-validators   Listen for validator updates"
-        echo "  reinit-chain-client Reinitialize the chain client and remove keys"
-        echo "  register            Register this Node"
-        echo "  read-data          Read data from this Node"
-        echo "  write-data         Write data from this Node"
-        echo "  transmit-data      Transmit data from this Node"
-        echo "  execute-data       Execute data from this Node"
-        echo "  help               Show this help message"
+        echo "  start-flask           Start the Flask API for cloud node registration"
+        echo "  init-chain-client     Initialize the chain client (generate keys, create genesis, extra data)"
+        echo "  start-chain-client    Start the chain client"
+        echo "  stop-chain-client     Stop the chain client"
+        echo "  restart-chain-client  Restart the chain client"
+        echo "  update-validators     Listen for validator updates"
+        echo "  reinit-chain-client   Reinitialize the chain client and remove keys"
+        echo "  register              Register this Node"
+        echo "  read-data             Read data from this Node"
+        echo "  write-data            Write data from this Node"
+        echo "  transmit-data         Transmit data from this Node"
+        echo "  execute-data          Execute data from this Node"
+        echo "  help                  Show this help message"
         echo ""
-        echo "Examples:"
-        echo "  ./start_client_services.sh start-flask"
-        echo "  ./start_client_services.sh init-chain-client"
-        echo "  ./start_client_services.sh start-chain-client"
         ;;
     *)
         echo "Invalid operation: $1"
-        echo "Use 'help' to see available operations."
+        echo "Use './start_client_services.sh help' for valid operations."
         exit 1
         ;;
 esac

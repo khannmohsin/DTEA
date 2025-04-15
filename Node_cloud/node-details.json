@@ -1,8 +1,9 @@
 {
     "node_id": "CL-001",
-    "node_name": "CloudNode",
+    "node_name": "Cloud_Node",
     "node_type": "Cloud",
-    "public_key": "0x1a2e25a8f7f899fd6abecb32cd21100c2e8c10640ed4e3428a41bc8a3c482c24bedebc4a7c6bb7ef608c77732bfab4b86f0e768c5bd153d428141c75300415ae",
-    "address": "0x3bf63d12f200a8bfb4173df21ce4bf0302a36795",
-    "signature": "0x953dea79f6aa249e3c52b7b08c5467b097dd5422de8cb087a60163583ee092ae2486ada45e799ee53e98a6f71fb7719aa7a86b18eee4177f56e1b3159b52820f00"
+    "public_key": "0x2ba37d99ac2115ddc689022a6e05c9a1cf417479a88366829f4c980a0879547151f4d6354dac3ed69d6860423800162149dafc72ade964e812ca7db005ce43cd",
+    "address": "0x4e7ffca41fdc70056835b1fdddf58bbac764aadf",
+    "node_url": "http://127.0.0.1:5000",
+    "signature": "0x163b63d9892d069eb83f37a99b872eb3aa617b9aa6f5af5e6c1df565128dd09d2c6ddd03a86e585ba90b834fb74e4c589d40c5ecba3be7051e7ea93923a1f68a00"
 }

@@ -227,26 +227,26 @@ if __name__ == "__main__":
         command = sys.argv[1]
 
         if command == "register":
-            if len(sys.argv) != 7:
-                print("Usage: python fog_node.py register <node_id> <node_name> <node_type> <registration_url> <key_path>")
+            if len(sys.argv) != 8:
+                print("Usage: python root_node_reg_request.py register <node_id> <node_name> <node_type> <registration_url> <key_path> <node_url>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path, node_url = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path, node_url)
             node.register_node()
 
         elif command == "read":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py read <registration_url>")
+                print("Usage: python root_node_reg_request.py read <registration_url>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path, node_url = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path, node_url)
             data = node.read_data()
 
         elif command == "write":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py write <registration_url> <data>")
+                print("Usage: python root_node_reg_request.py write <registration_url> <data>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]

@@ -211,12 +211,12 @@ if __name__ == "__main__":
         command = sys.argv[1]
 
         if command == "register":
-            if len(sys.argv) != 7:
-                print("Usage: python fog_node.py register <node_id> <node_name> <node_type> <registration_url> <key_path>")
+            if len(sys.argv) != 8:
+                print("Usage: python client_node_reg_request register <node_id> <node_name> <node_type> <registration_url> <key_path> <reg_node_url>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node_id, node_name, node_type, registration_url, key_path, reg_node_url = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path, reg_node_url)
             node.register_node()
 
         elif command == "read":

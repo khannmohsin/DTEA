@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from acknowledgement import AcknowledgementSender
+from client_blockchain_init import BlockchainInit
 import json
 import os
 import subprocess
@@ -19,8 +20,9 @@ class NodeRegistry:
         self.genesis_file_path = os.path.join(self.genesis_files_path, "genesis.json")
         self.enode_file_path = os.path.join(self.data_path, "enode.txt") 
         self.node_registry_path = os.path.join(self.data_path, "NodeRegistry.json")
-        self.prefunded_keys_file = os.path.join(self.data_path, "prefunded_keys.json")
+        self.prefunded_keys_file = os.path.join(self.root_path, "prefunded_keys.json")
         self.interact_file_path = os.path.join(self.root_path, "interact.js")
+        self.enode_file = os.path.join(self.data_path, "enode.txt") 
         self.besu_RPC_url = besu_RPC_url
         # self.registering_node_url = registering_node_url
         # self.besu_RPC_url = "http://127.0.0.1:8545"
@@ -836,14 +838,55 @@ class NodeRegistry:
                 print(f" Enode received: {enode}")
 
                 # Save the received files
-                with open(self.genesis_file_path, "w") as genesis_file:
-                    genesis_file.write(request.form.get("genesis_file", ""))
+                genesis_file = request.files.get("genesis_file")
+                if genesis_file:
+                    # Ensure the directory exists
+                    os.makedirs(os.path.dirname(self.genesis_file_path), exist_ok=True)
+                    # Save the file
+                    genesis_file.save(self.genesis_file_path)
+                    print(f"Genesis file saved to {self.genesis_file_path}")
 
-                with open(self.node_registry_path, "w") as node_registry_file:
-                    node_registry_file.write(request.form.get("node_registry_file", ""))
+                # Save the node registry file
+                node_registry_file = request.files.get("node_registry_file")
+                if node_registry_file:
+                    # Ensure the directory exists
+                    os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
+                    # Save the file
+                    node_registry_file.save(self.node_registry_path)
+                    print(f"Node registry file saved to {self.node_registry_path}")
 
-                with open(self.prefunded_keys_file, "w") as prefunded_keys_file:
-                    prefunded_keys_file.write(request.form.get("prefunded_keys_file", ""))
+                # Save the prefunded keys file
+                prefunded_keys_file = request.files.get("prefunded_keys_file")
+                if prefunded_keys_file:
+                    # Ensure the directory exists
+                    os.makedirs(os.path.dirname(self.root_path), exist_ok=True)
+                    # Save the file
+                    prefunded_keys_file.save(self.prefunded_keys_file)
+                    print(f"Prefunded keys file saved to {self.prefunded_keys_file}")
+
+                # Save the enode to a file
+                with open(self.enode_file, "w") as enode_file:
+                    enode_file.write(enode)
+                print(f"Enode saved to {self.enode_file}")
+
+            
+                # if os.path.exists(self.genesis_file_path, self.node_registry_path, self.enode_file, self.prefunded_keys_file):
+
+                #     print("All files exist. Proceeding with Blockchain start.")
+                # if genesis_file:
+                #     genesis_file.save(self.genesis_file_path)
+                #     print(f"Genesis file saved to {self.genesis_file_path}")
+
+                # node_registry_file = request.files.get("node_registry_file")
+                # if node_registry_file:
+                #     node_registry_file.save(self.node_registry_path)
+                #     print(f"Node registry file saved to {self.node_registry_path}")
+
+                # prefunded_keys_file = request.files.get("prefunded_keys_file")
+                # if prefunded_keys_file:
+                #     prefunded_keys_file.save(self.prefunded_keys_file)
+                #     print(f"Prefunded keys file saved to {self.prefunded_keys_file}")
+
 
                 return jsonify({
                     "status": "success",
@@ -856,7 +899,7 @@ class NodeRegistry:
             
 
 
-    def run(self, host="0.0.0.0", port=5000):
+    def run(self, host, port):
         """Run the Flask application."""
         self.app.run(host=host, port=port)
 
@@ -865,8 +908,10 @@ if __name__ == "__main__":
         print("Usage: python node_registry.py <besu_RPC_url> <registering_node_url>")
         sys.exit(1)
     besu_RPC_url = sys.argv[1]
-    registering_node_url = sys.argv[2]
+    print("RPC URL:", besu_RPC_url)
+    port = sys.argv[2]
+    print("Port:", port)
     # Initialize the NodeRegistry with the provided arguments
-    registry = NodeRegistry(besu_RPC_url, registering_node_url)
-    registry.run()
+    registry = NodeRegistry(besu_RPC_url)
+    registry.run("0.0.0.0", port)
 

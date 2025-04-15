@@ -1,8 +1,9 @@
 {
-    "node_id": "FN-01",
-    "node_name": "FogNode",
+    "node_id": "FG-012",
+    "node_name": "Fog_Node",
     "node_type": "Fog",
-    "public_key": "0x2c88db87f810441c501ffd5947052aa97949021d3ed2a8131c8488f15136eff1e1bf84460dacc8616dcaef0b470b613943bf52691cfc17a75b00aebb33852076",
-    "address": "0x9a2aea08a9e6f9e2130fae98522a9666a95a5676",
-    "signature": "0x45679b79df3b91f29406fe15a19a8c04d473a0ba6b160b342cb3415c1cf910e06b3fecd0bdf8fc51c88c90916f68d982d5a1d8414592d0d72e43762ef40d3d4400"
+    "public_key": "0x7ed9d39663dfc7cf0eb1f4ee0bce8b0bb18f2f483d0ec2d27c706b3570a3d6e51dfa59139a1c2215bc0b8b2f0ed8236fc56e8bfa6c919840d52928d4e4fec19d",
+    "address": "0xe798a035e8afdaf4e09f74e663649bae3842b3ac",
+    "node_url": "http://127.0.0.1:5001",
+    "signature": "0x6e6a4b27ad5cd0cde5d8a5702a40359c72bbf96c9e04f9f43bbb1d155a87e96f594b7df2f51a6ad7eee227e59faadf7f82580424b8453700b174c7e279fdb10800"
 }

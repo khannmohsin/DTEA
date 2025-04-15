@@ -36,6 +36,7 @@ class AcknowledgementSender:
             enode_url = data.get("result", {}).get("enode", "")
 
             if enode_url:
+                
                 # Ensure enode URL follows correct format
                 match = re.match(r"enode://([a-fA-F0-9]+)@([\d\.]+):(\d+)", enode_url)
                 if match:
