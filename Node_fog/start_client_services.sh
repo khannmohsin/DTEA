@@ -9,7 +9,7 @@ FLASK_PORT=5001
 BESU_PORT=8546
 NODE_URL=http://127.0.0.1:$FLASK_PORT
 BESU_RPC_URL=http://127.0.0.1:$BESU_PORT
-P2P_PORT=30303
+P2P_PORT=30304
 
 
 # Define paths to Python scripts
@@ -74,6 +74,7 @@ reinitialize_chain_client() {
     # Remove existing key files
     rm -rf "$ROOT_PATH/data"
     rm -rf "$ROOT_PATH/genesis"
+    rm -rf "$ROOT_PATH/node-details.json"
     initialize_chain_client
 }
 
@@ -163,7 +164,7 @@ node_write(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "Key Path: $key_path"
 
-    echo "Reading data from the accessed node..."
+    echo "Writing data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
 }
 
@@ -187,7 +188,7 @@ node_transmit(){
     echo "Key Path: $key_path"
 
 
-    echo "Reading data from the accessed node..."
+    echo "Transmitting data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
@@ -210,7 +211,7 @@ node_execute(){
     echo "Key Path: $key_path"
 
 
-    echo "Reading data from the accessed node..."
+    echo "Executing processes from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }

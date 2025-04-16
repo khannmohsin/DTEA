@@ -20,6 +20,7 @@ class NodeRegistry:
         self.node_registry_path = os.path.join(self.data_path, "NodeRegistry.json")
         self.prefunded_keys_file = os.path.join(self.root_path, "prefunded_keys.json")
         self.interact_file_path = os.path.join(self.root_path, "interact.js")
+        self.node_details = os.path.join(self.root_path, "node-details.json")
         self.besu_RPC_url = besu_RPC_url
         # self.registering_node_url = registering_node_url
         # self.besu_RPC_url = "http://127.0.0.1:8545"
@@ -502,12 +503,6 @@ class NodeRegistry:
         def read():
             print("Received Read Request")
             from_signature = request.args.get("signature")
-
-
-            with open("/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/node-details.json", "r") as json_file:
-                node_data = json.load(json_file)
-                to_signature = node_data.get("signature")
-
             node_id = request.args.get("node_id")
 
             if not from_signature:
@@ -515,9 +510,30 @@ class NodeRegistry:
 
             print(f"Signature of the {node_id} :", from_signature)
 
+            check_smart_contract = self.check_smart_contract()
+
+            if check_smart_contract:
+                print("Received Node Registration Request")
+                if self.check_smart_contract_deployment():
+                    print("Received Node Registration Request")
+                    # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
+                else:
+                    return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
+            else:
+                return jsonify({"status": "error", "message": "Smart contract not deployed.... \n Wait for admin to upload Smart Contract..."}), 500
+            
+            
             result, status_code = self.is_node_registered_js(from_signature)
             print("Node Registration Check Result:", result)
 
+            if os.path.exists(self.node_details):
+                with open(self.node_details, "r") as json_file:
+                    node_data = json.load(json_file)
+                    to_signature = node_data.get("signature")
+            else:
+                print("Details of this Node not found. This needs to be registered first.")
+                return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
+            
             if result["registered"]:
 
                 print("Node is registered on the blockchain.")
@@ -543,6 +559,13 @@ class NodeRegistry:
                     else:
                         print("Token is valid and not expired.")
                         # Check permissions
+
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
+
 
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
@@ -626,6 +649,11 @@ class NodeRegistry:
                     else:
                         print("Token is valid and not expired.")
                         # Check permissions
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
 
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
@@ -708,6 +736,11 @@ class NodeRegistry:
                     else:
                         print("Token is valid and not expired.")
                         # Check permissions
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
 
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
@@ -790,6 +823,12 @@ class NodeRegistry:
                     else:
                         print("Token is valid and not expired.")
                         # Check permissions
+
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
 
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)

@@ -146,7 +146,7 @@ class Node:
                 print("Data:", response.json())
                 return response.json()
             else:
-                print(f"Error Reading Data (Status {response.status_code}): {response.text}")
+                print(f"Error Transmitting Data (Status {response.status_code}): {response.text}")
                 return None
             
         except ValueError:
@@ -171,7 +171,7 @@ class Node:
                 print("Data:", response.json())
                 return response.json()
             else:
-                print(f"Error Reading Data (Status {response.status_code}): {response.text}")
+                print(f"Error Writing Data (Status {response.status_code}): {response.text}")
                 return None
             
         except ValueError:
@@ -188,7 +188,7 @@ class Node:
             "address": self.address,
             "signature": self.sign_identity()
         }
-        """Execute a command on the Cloud Node."""
+        """Execute a command on the Registering Node."""
         response = requests.post(f"{self.registration_url}/execute", params=data)
 
         try:
@@ -196,7 +196,7 @@ class Node:
                 print("Data:", response.json())
                 return response.json()
             else:
-                print(f"Error Reading Data (Status {response.status_code}): {response.text}")
+                print(f"Error Executing Command (Status {response.status_code}): {response.text}")
                 return None
             
         except ValueError:
@@ -212,7 +212,7 @@ if __name__ == "__main__":
 
         if command == "register":
             if len(sys.argv) != 8:
-                print("Usage: python client_node_reg_request register <node_id> <node_name> <node_type> <registration_url> <key_path> <reg_node_url>")
+                print("Usage: python client_node_reg_request.py register <node_id> <node_name> <node_type> <registration_url> <key_path> <reg_node_url>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path, reg_node_url = sys.argv[2:]
@@ -221,38 +221,38 @@ if __name__ == "__main__":
 
         elif command == "read":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py read <registration_url>")
+                print("Usage: python client_node_reg_request.py read <registration_url>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             data = node.read_data()
 
         elif command == "write":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py write <registration_url> <data>")
+                print("Usage: python client_node_reg_request.py write <registration_url> <data>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             node.write_data()
 
         elif command == "transmit":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py transmit <registration_url> <data>")
+                print("Usage: python client_node_reg_request.py transmit <registration_url> <data>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             node.transmit_data()
 
         elif command == "execute":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py execute <registration_url> <data>")
+                print("Usage: python client_node_reg_request.py execute <registration_url> <data>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             node.execute_command()
 
         else:

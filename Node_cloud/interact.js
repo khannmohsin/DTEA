@@ -16,6 +16,7 @@ const contractAddress = contractJson.networks[networkId].address;
 
 const accountsData = JSON.parse(fs.readFileSync('/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/prefunded_keys.json'));
 const account = accountsData.prefunded_accounts[0].address; // Using the first account from the JSON file
+// console.log("Account Address:", account);
 const privateKey = accountsData.prefunded_accounts[0].private_key; // Using the first account from the JSON file
 
 const contract = new web3.eth.Contract(contractJson.abi, contractAddress);

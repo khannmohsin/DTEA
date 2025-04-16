@@ -22,6 +22,7 @@ class NodeRegistry:
         self.node_registry_path = os.path.join(self.data_path, "NodeRegistry.json")
         self.prefunded_keys_file = os.path.join(self.root_path, "prefunded_keys.json")
         self.interact_file_path = os.path.join(self.root_path, "interact.js")
+        self.node_details = os.path.join(self.root_path, "node-details.json")
         self.enode_file = os.path.join(self.data_path, "enode.txt") 
         self.besu_RPC_url = besu_RPC_url
         # self.registering_node_url = registering_node_url
@@ -498,12 +499,6 @@ class NodeRegistry:
         def read():
             print("Received Read Request")
             from_signature = request.args.get("signature")
-
-
-            with open("/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/node-details.json", "r") as json_file:
-                node_data = json.load(json_file)
-                to_signature = node_data.get("signature")
-
             node_id = request.args.get("node_id")
 
             if not from_signature:
@@ -511,9 +506,31 @@ class NodeRegistry:
 
             print(f"Signature of the {node_id} :", from_signature)
 
+            check_smart_contract = self.check_smart_contract()
+
+            if check_smart_contract:
+                print("Received Node Registration Request")
+                if self.check_smart_contract_deployment():
+                    print("Received Node Registration Request")
+                    # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
+                else:
+                    return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
+            else:
+                return jsonify({"status": "error", "message": "Smart contract not deployed.... \n Wait for admin to upload Smart Contract..."}), 500
+            
+            
             result, status_code = self.is_node_registered_js(from_signature)
             print("Node Registration Check Result:", result)
 
+
+            if os.path.exists(self.node_details):
+                with open(self.node_details, "r") as json_file:
+                    node_data = json.load(json_file)
+                    to_signature = node_data.get("signature")
+            else:
+                print("Details of this Node not found. This needs to be registered first.")
+                return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
+            
             if result["registered"]:
 
                 print("Node is registered on the blockchain.")
@@ -539,6 +556,12 @@ class NodeRegistry:
                     else:
                         print("Token is valid and not expired.")
                         # Check permissions
+
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
 
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
@@ -623,6 +646,12 @@ class NodeRegistry:
                         print("Token is valid and not expired.")
                         # Check permissions
 
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
+
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
                 # Extract the policy line from the capability token output
@@ -704,6 +733,12 @@ class NodeRegistry:
                     else:
                         print("Token is valid and not expired.")
                         # Check permissions
+
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
 
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
@@ -787,6 +822,12 @@ class NodeRegistry:
                         print("Token is valid and not expired.")
                         # Check permissions
 
+                else:
+                    print("Token is not available.")
+                    # Issue a new token
+                    issue_token = self.issue_capability_token(from_signature, to_signature)
+                    print("New Capability Token:", issue_token)
+
                 get_token = self.get_capability_token(from_signature, to_signature)
                 print("DEBUG----------->Capability Token:", get_token)
                 # Extract the policy line from the capability token output
@@ -869,24 +910,16 @@ class NodeRegistry:
                     enode_file.write(enode)
                 print(f"Enode saved to {self.enode_file}")
 
-            
-                # if os.path.exists(self.genesis_file_path, self.node_registry_path, self.enode_file, self.prefunded_keys_file):
-
-                #     print("All files exist. Proceeding with Blockchain start.")
-                # if genesis_file:
-                #     genesis_file.save(self.genesis_file_path)
-                #     print(f"Genesis file saved to {self.genesis_file_path}")
-
-                # node_registry_file = request.files.get("node_registry_file")
-                # if node_registry_file:
-                #     node_registry_file.save(self.node_registry_path)
-                #     print(f"Node registry file saved to {self.node_registry_path}")
-
-                # prefunded_keys_file = request.files.get("prefunded_keys_file")
-                # if prefunded_keys_file:
-                #     prefunded_keys_file.save(self.prefunded_keys_file)
-                #     print(f"Prefunded keys file saved to {self.prefunded_keys_file}")
-
+                # Run a shell script to start the blockchain
+                try:
+                    script_path = os.path.join(self.root_path, "start_client_services.sh")
+                    if os.path.exists(script_path):
+                        subprocess.run(["bash", script_path, "start-chain-client"], check=True)
+                        print("Blockchain started successfully using the shell script.")
+                    else:
+                        print(f"Shell script not found at {script_path}.")
+                except subprocess.CalledProcessError as e:
+                    print(f"Error occurred while running the shell script: {e}")
 
                 return jsonify({
                     "status": "success",
@@ -897,7 +930,6 @@ class NodeRegistry:
             except Exception as e:
                 return jsonify({"status": "error", "message": f"Exception occurred: {str(e)}"}), 500
             
-
 
     def run(self, host, port):
         """Run the Flask application."""

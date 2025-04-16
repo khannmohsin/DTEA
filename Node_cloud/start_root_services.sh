@@ -106,6 +106,7 @@ reinitialize_blockchain() {
     rm -rf "$ROOT_PATH/genesis"
     rm -rf "$ROOT_PATH/qbftConfigFile.json"
     rm -rf "$ROOT_PATH/prefunded_keys.json"
+    rm -rf "$ROOT_PATH/node-details.json"
 
     # Reinitialize the blockchain
     initialize_blockchain
@@ -176,7 +177,7 @@ node_read(){
     echo "Key Path: $key_path"
 
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" read "$node_id" "$node_name" "$node_type" "$read_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" read "$node_id" "$node_name" "$node_type" "$read_url" "$key_path"
 }
 
 
@@ -199,7 +200,7 @@ node_write(){
     echo "Key Path: $key_path"
 
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
 }
 
 
@@ -221,7 +222,7 @@ node_transmit(){
     local key_path="$ROOT_PATH/data/key.pub"
 
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
 
@@ -244,7 +245,7 @@ node_execute(){
     echo "Key Path: $key_path"
 
     echo "Reading data from the accessed node..."
-    $PYTHON_V_ENV "$FOG_NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }
 

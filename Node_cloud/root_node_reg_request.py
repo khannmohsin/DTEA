@@ -240,8 +240,8 @@ if __name__ == "__main__":
                 print("Usage: python root_node_reg_request.py read <registration_url>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, registration_url, key_path, node_url = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path, node_url)
+            node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             data = node.read_data()
 
         elif command == "write":
@@ -250,7 +250,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             node.write_data()
 
         elif command == "transmit":
@@ -259,7 +259,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             node.transmit_data()
 
         elif command == "execute":
@@ -268,7 +268,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path)
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
             node.execute_command()
 
         else:
