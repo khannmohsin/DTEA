@@ -46,20 +46,20 @@ class BlockchainInit:
 
     #---------------------Update Validators----------------------------
 
-    def start_validator_event_listener():
-        try:
-            process = subprocess.Popen(
-                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "listenForValidatorProposals"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+    # def start_validator_event_listener():
+    #     try:
+    #         process = subprocess.Popen(
+    #             ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "listenForValidatorProposals"],
+    #             stdout=subprocess.PIPE,
+    #             stderr=subprocess.PIPE,
+    #             text=True
+    #         )
 
-            print("Validator proposal event listener started (running in background)...")
-            return process  # You can keep a reference to manage the process (e.g., stop later)
-        except Exception as e:
-            print(" Failed to start event listener:", e)
-            return None  
+    #         print("Validator proposal event listener started (running in background)...")
+    #         return process  # You can keep a reference to manage the process (e.g., stop later)
+    #     except Exception as e:
+    #         print(" Failed to start event listener:", e)
+    #         return None  
 
     #---------------------Create QBFT config file----------------------------
     def create_qbft_file(self, num_prefunded_accounts, num_validators):
@@ -67,10 +67,12 @@ class BlockchainInit:
         num_validators = int(num_validators) 
         
         CHAIN_ID = 1337
-        BLOCK_PERIOD_SECONDS = 2
+        BLOCK_PERIOD_SECONDS = 5
         EPOCH_LENGTH = 30000
         REQUEST_TIMEOUT_SECONDS = 4
-        GAS_LIMIT = "0x47b760"
+
+        # GAS_LIMIT = "0x47b760"
+        GAS_LIMIT = "0x1fffffffffffff"
         DIFFICULTY = "0x1"
 
         prefunded_accounts = [self.generate_account() for _ in range(num_prefunded_accounts)]
@@ -85,7 +87,8 @@ class BlockchainInit:
                         "blockperiodseconds": BLOCK_PERIOD_SECONDS,
                         "epochlength": EPOCH_LENGTH,
                         "requesttimeoutseconds": REQUEST_TIMEOUT_SECONDS
-                    }
+                    },
+                    "zeroBaseFee": True
                 },
                 "nonce": "0x0",
                 "timestamp": "0x58ee40ba",
@@ -246,6 +249,18 @@ class BlockchainInit:
     #---------------------Start the blockchain node----------------------------
     def start_blockchain_node(self):
         """Starts the Besu node using subprocess.Popen()"""
+
+        with open(self.prefunded_account_file, "r") as f:
+            data = json.load(f)
+        # Extract addresses
+        addresses = [entry["address"] for entry in data["prefunded_accounts"]]
+        # Example: print them
+        for addr in addresses:
+            print(f"Address: {addr}")  # Example action for each address
+
+        # Optional: get a single address, like the first one
+        first_address = addresses[0]
+
         try:
             print("Starting Besu node...")
 
@@ -255,8 +270,11 @@ class BlockchainInit:
                 "--node-private-key-file=" + self.private_key,
                 "--genesis-file=" + self.genesis_file,
                 "--rpc-http-enabled",
-                "--rpc-http-api=ETH,NET,QBFT, ADMIN, WEB3",
+                "--rpc-http-api=ETH,NET,QBFT,ADMIN,WEB3,TXPOOL,MINER",
                 "--host-allowlist=*",
+                "--miner-enabled",
+                "--miner-coinbase=" + first_address,
+                "--min-gas-price=0",
                 "--rpc-http-cors-origins=all"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

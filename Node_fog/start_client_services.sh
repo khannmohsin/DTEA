@@ -13,7 +13,7 @@ P2P_PORT=30304
 
 
 # Define paths to Python scripts
-ROOT_PATH="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog"
+ROOT_PATH="$(pwd)"
 BLOCKCHAIN_SCRIPT="$ROOT_PATH/client_blockchain_init.py"
 FLASK_SCRIPT="$ROOT_PATH/client_node_registration.py"
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
@@ -22,9 +22,10 @@ NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
 
 # **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {
-    echo " Starting Cloud Node Flask API..."
+    echo " Starting Client Node Flask API..."
     osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL $FLASK_PORT\"" 
 }
+
 
 initialize_chain_client() {
     echo "Initializing chain client..."
@@ -75,13 +76,14 @@ reinitialize_chain_client() {
     rm -rf "$ROOT_PATH/data"
     rm -rf "$ROOT_PATH/genesis"
     rm -rf "$ROOT_PATH/node-details.json"
+    rm -rf "$ROOT_PATH/prefunded_keys.json"
     initialize_chain_client
 }
 
 # Node Registration Request
 node_registration_request() {
     # Check if the correct number of arguments is provided
-    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4"]; then
         echo "Error: Missing arguments for node registration."
         echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
         exit 1
@@ -95,6 +97,8 @@ node_registration_request() {
     echo "Node Type: $node_type"
     local registration_url="http://127.0.0.1:$4"
     echo "Registration URL: $registration_url"
+    local rpl_url= "http://127.0.0.1:$BESU_PORT"
+    echo "rpl URL: $rpl_url"
     local key_path="/$ROOT_PATH/data/key.pub"
     echo "Key Path: $key_path"
 
@@ -119,7 +123,7 @@ node_registration_request() {
         echo "Key file not found. Initialize blockchain first."
     else
         echo "Key file found. Continuing with registration..."
-        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$registration_url" "$key_path" "$NODE_URL"
+        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$registration_url" "$key_path" "$NODE_URL" "$rpl_url"
     fi
 }
 
@@ -268,7 +272,7 @@ case "$1" in
         echo "Usage: $0 <operation> [args]"
         echo ""
         echo "Available operations:"
-        echo "  start-flask           Start the Flask API for cloud node registration"
+        echo "  start-flask           Start the Flask API for node registration"
         echo "  init-chain-client     Initialize the chain client (generate keys, create genesis, extra data)"
         echo "  start-chain-client    Start the chain client"
         echo "  stop-chain-client     Stop the chain client"

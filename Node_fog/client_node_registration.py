@@ -2,19 +2,22 @@ from flask import Flask, request, jsonify
 from acknowledgement import AcknowledgementSender
 from client_blockchain_init import BlockchainInit
 import json
+import threading
 import os
 import subprocess
 import time
 import sys
+import re
 from eth_keys import keys
 from eth_utils import keccak
+
 
 class NodeRegistry:
     """Class to manage the registration and retrieval of nodes (Cloud, Fog, Edge, Sensor)."""
 
     def __init__(self, besu_RPC_url):
         """Initialize with the JSON file storing node data and set up Flask."""
-        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/"
+        self.root_path = os.path.dirname(os.path.abspath(__file__))
         self.data_path = os.path.join(self.root_path, "data/")
         self.genesis_files_path = os.path.join(self.root_path, "genesis/")
         self.genesis_file_path = os.path.join(self.genesis_files_path, "genesis.json")
@@ -25,6 +28,33 @@ class NodeRegistry:
         self.node_details = os.path.join(self.root_path, "node-details.json")
         self.enode_file = os.path.join(self.data_path, "enode.txt") 
         self.besu_RPC_url = besu_RPC_url
+        # script_path = os.path.join(self.root_path, "start_client_services.sh")
+        # print("Script Path:", script_path)
+
+        # if os.path.exists(self.node_details):
+        #     with open(self.node_details, "r") as json_file:
+        #         node_data = json.load(json_file)
+        #         signature = node_data.get("signature")
+        #     checkValidator = self.checkValidator(signature)
+        #     if checkValidator:
+        #         print("Node is a validator.")
+        #         # Start the listener thread
+        #         print("Starting the listener thread for validator proposal...")
+        #         # Create and start the listener thread
+        #         listener_thread = threading.Thread(target=self.listenForValidatorProposal)
+        #         listener_thread.daemon = True  # Daemonize thread
+        #         listener_thread.start()
+
+        #     else:
+        #         print("Node is not a validator.")
+        #         # Proceed with normal operations
+        #         print("Node is not a validator. Proceeding with normal operations.")
+        #         # You can add any other logic here if needed
+        # else:
+        #     print("Details of this Node not found. This needs to be registered first.")
+        listener_thread = threading.Thread(target=self.listenForValidatorProposal)
+        listener_thread.daemon = True  # Daemonize thread
+        listener_thread.start()
         # self.registering_node_url = registering_node_url
         # self.besu_RPC_url = "http://127.0.0.1:8545"
         # self.registering_node_url = "http://127.0.0.1:5001" 
@@ -65,11 +95,11 @@ class NodeRegistry:
             print("Signature verification failed:", str(e))
             return False
 
-    def register_node_on_chain(self, node_id, node_name, node_type, public_key, address, receiver_node_type, signature):
+    def register_node_on_chain(self, node_id, node_name, node_type, public_key, address, rpcURL, receiver_node_type, regNodeSig, regBySig):
         try:
             result = subprocess.run([
                 "node", self.interact_file_path, "registerNode",
-                node_id, node_name, node_type, public_key, address, receiver_node_type, signature
+                node_id, node_name, node_type, public_key, address, rpcURL, receiver_node_type, regNodeSig, regBySig
             ], capture_output=True, text=True)
 
             output = result.stdout.strip()
@@ -269,14 +299,53 @@ class NodeRegistry:
         return output
         
     def listenForValidatorProposal(self):
-        result = subprocess.run([
-            "node", self.interact_file_path,
-            "listenForValidatorProposal"
-        ], capture_output=True, text=True)
+        while True:
+            if os.path.exists(self.node_details):
+                with open(self.node_details, "r") as json_file:
+                    node_data = json.load(json_file)
+                    signature = node_data.get("signature")
 
-        output = result.stdout.strip()
-        print("Raw JS Output listenForValidatorProposal:", output)
-        return output
+                is_validator = self.checkValidator(signature)
+
+                if is_validator:
+                    print("This Node is a validator.")
+
+                    # Run the JS script and capture output
+                    result = subprocess.run(
+                        ["node", self.interact_file_path, "listenForValidatorProposals"],
+                        capture_output=True,
+                        text=True
+                    )
+                        
+                    # print(f"listenForValidatorProposals: {result.stdout}")
+
+                    # Extract all Ethereum-style addresses from JS output
+                    addresses = [address.lower() for address in re.findall(r'0x[a-fA-F0-9]{40}', result.stdout)]
+                    # print(f"REGEX CLEANED: {addresses}")
+
+                    all_validators = self.get_all_validators()
+                    # print(f"All Validators: {all_validators}")
+
+
+                    new_addresses = [addr for addr in addresses if addr not in all_validators]
+
+                    if new_addresses:
+                        print(f"New validator addresses to propose: {new_addresses}")
+                        for new_validator in new_addresses:
+                            print(f"Proposing this: {new_validator}")
+                            response = self.proposeValidator(new_validator, "true")
+                            print(f"Proposed {new_validator} → Response: {response}")
+                    else:
+                        print("All proposed addresses are already validators.")
+                else:
+                    print("This Node is not a validator:")
+                    print(signature)
+                    print("Stopping the listener thread as the node is not a validator.")
+                    break
+            else:
+                print("Node details file does not exist. Waiting for the Node to get registered.")
+            time.sleep(5)
+
 
     def get_all_validators(self):
 
@@ -394,6 +463,16 @@ class NodeRegistry:
                 result, status_code = self.is_node_registered_js(data["signature"])
                 print("Node Registration Check Result:", result)
 
+                if os.path.exists(self.node_details):
+                    with open(self.node_details, "r") as json_file:
+                        node_data = json.load(json_file)
+                        node_id = node_data.get("node_id")
+                        node_type = node_data.get("node_type")
+                        node_signature = node_data.get("signature")
+                else:
+                    print("Details of this Node not found. This needs to be registered first.")
+                    return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
+                
                 if result["registered"] == True:
                     print("Node is already registered on the blockchain.")
                     return jsonify({"status": "error", "message": "Node already registered on the blockchain"}), 409
@@ -403,7 +482,7 @@ class NodeRegistry:
                     # Register the node on the blockchain
                     status, message, raw_output = self.register_node_on_chain(
                         data["node_id"], data["node_name"], data["node_type"], data["public_key"],
-                        data["address"], "Cloud", data["node_url"], data["signature"]
+                        data["address"], node_type, data["node_url"], data["signature"], node_signature
                     )
 
                     # print(status, message, raw_output)
@@ -429,9 +508,8 @@ class NodeRegistry:
 
                         cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
                         response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
-                        cloud_ack_sender.send_acknowledgment(node_id="Cloud")
-
-
+                        cloud_ack_sender.send_acknowledgment(node_id)
+                        
                         # Check if the node is a validator
                         if self.checkValidator(data["signature"]):
                             print("Node is a validator.\n")
@@ -532,7 +610,6 @@ class NodeRegistry:
                 return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
             
             if result["registered"]:
-
                 print("Node is registered on the blockchain.")
                 details, status = self.get_node_details_js(from_signature)
                 print(details)
@@ -550,6 +627,8 @@ class NodeRegistry:
                     if check_expiry:
                         print("Token is expired and needs to be renewed.")
                         # Issue a new token
+                        revoke_token = self.revoke_capability_token(from_signature, to_signature)
+                        print("Revoke Capability Token:", revoke_token)
                         issue_token = self.issue_capability_token(from_signature, to_signature)
                         print("New Capability Token:", issue_token)
 
@@ -560,7 +639,9 @@ class NodeRegistry:
                 else:
                     print("Token is not available.")
                     # Issue a new token
+
                     issue_token = self.issue_capability_token(from_signature, to_signature)
+                    time.sleep(5)
                     print("New Capability Token:", issue_token)
 
                 get_token = self.get_capability_token(from_signature, to_signature)
@@ -602,24 +683,39 @@ class NodeRegistry:
 
         @self.app.route("/write", methods=["POST"])
         def write():
-            print("Received Read Request")
+            print("Received Write Request")
             from_signature = request.args.get("signature")
-
-
-            with open("/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/node-details.json", "r") as json_file:
-                node_data = json.load(json_file)
-                to_signature = node_data.get("signature")
-
             node_id = request.args.get("node_id")
 
             if not from_signature:
                 return jsonify({"status": "error", "message": "Missing signature"}), 400
 
             print(f"Signature of the {node_id} :", from_signature)
+            check_smart_contract = self.check_smart_contract()
 
+            if check_smart_contract:
+                print("Received Node Registration Request")
+                if self.check_smart_contract_deployment():
+                    print("Received Node Registration Request")
+                    # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
+                else:
+                    return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
+            else:
+                return jsonify({"status": "error", "message": "Smart contract not deployed.... \n Wait for admin to upload Smart Contract..."}), 500
+            
+            
             result, status_code = self.is_node_registered_js(from_signature)
             print("Node Registration Check Result:", result)
 
+
+            if os.path.exists(self.node_details):
+                with open(self.node_details, "r") as json_file:
+                    node_data = json.load(json_file)
+                    to_signature = node_data.get("signature")
+            else:
+                print("Details of this Node not found. This needs to be registered first.")
+                return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
+            
             if result["registered"]:
 
                 print("Node is registered on the blockchain.")
@@ -690,24 +786,39 @@ class NodeRegistry:
 
         @self.app.route("/execute", methods=["POST"])
         def execute():
-            print("Received Read Request")
+            print("Received Execute Request")
             from_signature = request.args.get("signature")
-
-
-            with open("/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/node-details.json", "r") as json_file:
-                node_data = json.load(json_file)
-                to_signature = node_data.get("signature")
-
             node_id = request.args.get("node_id")
 
             if not from_signature:
                 return jsonify({"status": "error", "message": "Missing signature"}), 400
 
             print(f"Signature of the {node_id} :", from_signature)
+            check_smart_contract = self.check_smart_contract()
 
+            if check_smart_contract:
+                print("Received Node Registration Request")
+                if self.check_smart_contract_deployment():
+                    print("Received Node Registration Request")
+                    # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
+                else:
+                    return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
+            else:
+                return jsonify({"status": "error", "message": "Smart contract not deployed.... \n Wait for admin to upload Smart Contract..."}), 500
+            
+            
             result, status_code = self.is_node_registered_js(from_signature)
             print("Node Registration Check Result:", result)
 
+
+            if os.path.exists(self.node_details):
+                with open(self.node_details, "r") as json_file:
+                    node_data = json.load(json_file)
+                    to_signature = node_data.get("signature")
+            else:
+                print("Details of this Node not found. This needs to be registered first.")
+                return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
+            
             if result["registered"]:
 
                 print("Node is registered on the blockchain.")
@@ -778,14 +889,8 @@ class NodeRegistry:
 
         @self.app.route("/transmit", methods=["POST"])
         def transmit():
-            print("Received Read Request")
+            print("Received Transmit Request")
             from_signature = request.args.get("signature")
-
-
-            with open("/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/node-details.json", "r") as json_file:
-                node_data = json.load(json_file)
-                to_signature = node_data.get("signature")
-
             node_id = request.args.get("node_id")
 
             if not from_signature:
@@ -793,8 +898,30 @@ class NodeRegistry:
 
             print(f"Signature of the {node_id} :", from_signature)
 
+            check_smart_contract = self.check_smart_contract()
+
+            if check_smart_contract:
+                print("Received Node Registration Request")
+                if self.check_smart_contract_deployment():
+                    print("Received Node Registration Request")
+                    # return jsonify({"status": "success", "message": "Smart contract is deployed.... \n Proceed with registration"}), 200
+                else:
+                    return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
+            else:
+                return jsonify({"status": "error", "message": "Smart contract not deployed.... \n Wait for admin to upload Smart Contract..."}), 500
+            
+            
             result, status_code = self.is_node_registered_js(from_signature)
             print("Node Registration Check Result:", result)
+
+
+            if os.path.exists(self.node_details):
+                with open(self.node_details, "r") as json_file:
+                    node_data = json.load(json_file)
+                    to_signature = node_data.get("signature")
+            else:
+                print("Details of this Node not found. This needs to be registered first.")
+                return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
 
             if result["registered"]:
 
@@ -914,7 +1041,7 @@ class NodeRegistry:
                 try:
                     script_path = os.path.join(self.root_path, "start_client_services.sh")
                     if os.path.exists(script_path):
-                        subprocess.run(["bash", script_path, "start-chain-client"], check=True)
+                        subprocess.run(["bash", script_path, "start-chain-client"], check=True, cwd=self.root_path)
                         print("Blockchain started successfully using the shell script.")
                     else:
                         print(f"Shell script not found at {script_path}.")

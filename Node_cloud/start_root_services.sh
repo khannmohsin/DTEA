@@ -6,15 +6,12 @@ PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/pyth
 
 # Network Configuration
 FLASK_PORT=5000
+BESU_PORT=8545
 NODE_URL=http://127.0.0.1:$FLASK_PORT
-BESU_RPC_URL=http://127.0.0.1:8545
-
-
-
-
+BESU_RPC_URL=http://127.0.0.1:$BESU_PORT
 
 # Define paths to Python scripts
-ROOT_PATH="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud"
+ROOT_PATH="$(pwd)"
 BLOCKCHAIN_SCRIPT="$ROOT_PATH/root_blockchain_init.py"
 FLASK_SCRIPT="$ROOT_PATH/root_node_registration.py"
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/root_node_reg_request.py"
@@ -128,6 +125,8 @@ self_register(){
     echo "Node Type: $node_type"
     local root_url="http://127.0.0.1:$FLASK_PORT"
     echo "Root URL: $root_url"
+    local rpc_url="http://127.0.0.1:$BESU_PORT"
+    echo "rpl URL: $rpc_url"
     local key_path="/$ROOT_PATH/data/key.pub"
 
     echo "Key Path: $key_path"
@@ -149,11 +148,10 @@ self_register(){
     echo ""
 
     # Check for existing keys
-    if [ ! -f "$key_path" ]; then
+    if [ -f "$key_path" ]; then
         echo "Key file not found. Initialize blockchain first."
-    else
         echo "Key file found. Continuing with registration..."
-        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$root_url" "$key_path" "$NODE_URL"
+        $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$root_url" "$key_path" "$NODE_URL" "$rpc_url"
     fi
 }
 
@@ -199,7 +197,7 @@ node_write(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "Key Path: $key_path"
 
-    echo "Reading data from the accessed node..."
+    echo "Writing data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
 }
 
@@ -221,7 +219,7 @@ node_transmit(){
     echo "Transmit URL: $transmit_url"
     local key_path="$ROOT_PATH/data/key.pub"
 
-    echo "Reading data from the accessed node..."
+    echo "Transmitting data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
@@ -244,7 +242,7 @@ node_execute(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "Key Path: $key_path"
 
-    echo "Reading data from the accessed node..."
+    echo "Executing data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }

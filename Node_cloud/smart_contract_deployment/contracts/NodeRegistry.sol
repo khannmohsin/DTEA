@@ -28,10 +28,12 @@ contract NodeRegistry {
     mapping(string => string) public nodeSignatureToNodeId;
     mapping(address => string) public addressToNodeId;
     mapping(bytes32 => CapabilityToken) public capabilityTokens; 
+    mapping(address => string) public nodeRpcUrls;
 
     // Event to signal validator proposal for off-chain listeners
-    event ValidatorProposed(address indexed proposedBy, address indexed validator);   
-
+    event ValidatorProposed(address indexed proposedBy, address indexed validator); 
+    event RpcUrlMapped(address indexed nodeAddress, string rpcURL);
+    
     // Updated event: tokens are now a single string each.
     event NodeRegistered(
         string indexed nodeId,
@@ -68,6 +70,7 @@ contract NodeRegistry {
         string memory nodeTypeStr,
         string memory publicKey,
         address registeredBy,
+        string memory rpcURL,
         string memory registeredByNodeTypeStr,
         string memory nodeSignature 
     ) public {
@@ -95,7 +98,9 @@ contract NodeRegistry {
         });
 
         addressToNodeId[registeredBy] = nodeId;
+        nodeRpcUrls[registeredBy] = rpcURL;
 
+        emit RpcUrlMapped(registeredBy, rpcURL);
         emit NodeRegistered(
             nodeId,
             nodeName,
@@ -190,8 +195,8 @@ contract NodeRegistry {
         string memory fromNodeId = nodeSignatureToNodeId[fromNodeSignature];
         string memory toNodeId = nodeSignatureToNodeId[toNodeSignature];
 
-        require(iotNodes[fromNodeId].isRegistered, "Sender not registered");
-        require(iotNodes[toNodeId].isRegistered, "Receiver not registered");
+        // require(iotNodes[fromNodeId].isRegistered, "Sender not registered");
+        // require(iotNodes[toNodeId].isRegistered, "Receiver not registered");
 
         NodeType fromType = iotNodes[fromNodeId].nodeType;
         NodeType toType = iotNodes[toNodeId].nodeType;
@@ -252,64 +257,33 @@ contract NodeRegistry {
     
 
     function getPolicyString(NodeType from, NodeType to) internal pure returns (string memory) { 
-        if (from == NodeType.Cloud) {
+        if (from == NodeType.Cloud && to == NodeType.Fog) {
+            return "Cloud->Fog:READ,WRITE";
+        } else if (from == NodeType.Cloud && to == NodeType.Edge) {
+            return "Cloud->Edge:READ";
 
-            if (to == NodeType.Fog) {
-                return "Cloud->Fog:READ,WRITE";
-            } else if (to == NodeType.Edge) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Sensor) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Actuator) {
-                return "NO POLICY DEFINED";
-            }
-        } else if (from == NodeType.Fog) {
+        } else if (from == NodeType.Fog && to == NodeType.Cloud) {
+            return "Fog->Cloud:READ,WRITE";
+        } else if (from == NodeType.Fog && to == NodeType.Edge) {
+            return "Fog->Edge:READ";
 
-            if (to == NodeType.Cloud) {
-                return "Fog->Cloud:READ,WRITE";
-            } else if (to == NodeType.Edge) {
-                return "Fog->Edge:READ,WRITE";
-            } else if (to == NodeType.Sensor) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Actuator) {
-                return "NO POLICY DEFINED";
-            }   
-        } else if (from == NodeType.Edge) {
+        } else if (from == NodeType.Edge && to == NodeType.Cloud) {
+            return "Edge->Cloud:READ,WRITE";
+        } else if (from == NodeType.Edge && to == NodeType.Fog) {
+            return "Edge->Fog:READ,WRITE";
 
-            if (to == NodeType.Cloud) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Fog) {
-                return "Edge->Fog:READ,WRITE";
-            } else if (to == NodeType.Sensor) {
-                return "Edge->Sensor:EXECUTE";
-            } else if (to == NodeType.Actuator) {
-                return "Edge->Actuator:EXECUTE";
-            }
-        } else if (from == NodeType.Sensor) {
 
-            if (to == NodeType.Cloud) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Fog) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Edge) {
-                return "Sensor->Edge:READ";
-            } else if (to == NodeType.Actuator) {
-                return "NO POLICY DEFINED";
-            }
-        } else if (from == NodeType.Actuator) {
+        } else if (from == NodeType.Sensor && to == NodeType.Edge) {
+            return "Sensor->Edge:READ,WRITE";
+  
 
-            if (to == NodeType.Cloud) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Fog) {
-                return "NO POLICY DEFINED";
-            } else if (to == NodeType.Edge) {
-                return "Actuator->Edge:READ,WRITE,EXECUTE";
-            } else if (to == NodeType.Sensor) {
-                return "NO POLICY DEFINED";
-            }
-        }
-        return "INVALID_POLICY: NO POLICY ASSIGNED FOR THIS COMBINATION";
+        } else if (from == NodeType.Actuator && to == NodeType.Fog) {
+            return "Actuator->Fog:READ,WRITE";
+
+        } else 
+        return "NO POLICY"; // Default policy
     }
+
 
     function getNodeType(string memory nodeTypeStr) internal pure returns (NodeType) {
         bytes32 nodeTypeHash = keccak256(abi.encodePacked(nodeTypeStr));

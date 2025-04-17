@@ -7,8 +7,8 @@ import sys
 
 class BlockchainInit:
     def __init__(self):
-        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/"
-        # self.prefunded_account_file = os.path.join(self.root_path, "prefunded_keys.json")
+        self.root_path = os.path.dirname(os.path.abspath(__file__))
+        self.prefunded_account_file = os.path.join(self.root_path, "prefunded_keys.json")
         # self.config_file = os.path.join(self.root_path, "qbftConfigFile.json")
         self.data_path = os.path.join(self.root_path, "data/")
         self.genesis_files_path = os.path.join(self.root_path, "genesis/")
@@ -34,20 +34,20 @@ class BlockchainInit:
         
     #---------------------Update Validators----------------------------
 
-    def start_validator_event_listener():
-        try:
-            process = subprocess.Popen(
-                ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "listenForValidatorProposals"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+    # def start_validator_event_listener():
+    #     try:
+    #         process = subprocess.Popen(
+    #             ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "listenForValidatorProposals"],
+    #             stdout=subprocess.PIPE,
+    #             stderr=subprocess.PIPE,
+    #             text=True
+    #         )
 
-            print("Validator proposal event listener started (running in background)...")
-            return process  # You can keep a reference to manage the process (e.g., stop later)
-        except Exception as e:
-            print(" Failed to start event listener:", e)
-            return None  
+    #         print("Validator proposal event listener started (running in background)...")
+    #         return process  # You can keep a reference to manage the process (e.g., stop later)
+    #     except Exception as e:
+    #         print(" Failed to start event listener:", e)
+    #         return None  
         
     #---------------------Node Public and Private generation----------------------------
     def generate_keys(self):
@@ -256,6 +256,17 @@ class BlockchainInit:
     def start_blockchain_node(self, p2p_port, rpc_http_port):
         enode_address = self.load_enode_address()
         # 30304
+        with open(self.prefunded_account_file, "r") as f:
+            data = json.load(f)
+        # Extract addresses
+        addresses = [entry["address"] for entry in data["prefunded_accounts"]]
+        # Example: print them
+        for addr in addresses:
+            print(f"Address: {addr}")  # Example action for each address
+
+        # Optional: get a single address, like the first one
+        first_address = addresses[0]
+
         """Starts the Besu node using subprocess.Popen()"""
         try:
             print("Starting Besu node...")
@@ -268,9 +279,12 @@ class BlockchainInit:
                 "--bootnodes=" + enode_address,
                 "--p2p-port=" + str(p2p_port),
                 "--rpc-http-enabled",
-                "--rpc-http-api=ETH,NET,QBFT, ADMIN, WEB3",
+                "--rpc-http-api=ETH,NET,QBFT,ADMIN,WEB3,TXPOOL,MINER",
                 "--host-allowlist=*",
+                "--miner-enabled",
+                "--miner-coinbase=" + first_address,
                 "--rpc-http-cors-origins=all",
+                "--min-gas-price=0",
                 "--rpc-http-port=" + str(rpc_http_port)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

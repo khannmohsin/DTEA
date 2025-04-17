@@ -1,0 +1,16 @@
+{
+    "prefunded_accounts": [
+        {
+            "private_key": "3f15b93d13cc41386b3c3eeb14a5604f45cbb18f4c9ffb8fa24089b35ab508a1",
+            "address": "0xb6639b772407250E6c7b75B8582b5C7f3CFE143E"
+        },
+        {
+            "private_key": "89fbfbd8a90d3017adb96ce0f2b165af0b098bba5959dafac960c383ce82f38c",
+            "address": "0xa8465a95d11e885939Fd1B9688a4b15D5828Bec4"
+        },
+        {
+            "private_key": "b621fd1a21e07d1fe71bfce1ffe19683cf65f3ef97c20e1f1e777a92362446b3",
+            "address": "0x21A426E01ab9Da1Af138fF0bFb25Ea851B9A05D3"
+        }
+    ]
+}

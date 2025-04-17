@@ -10,7 +10,7 @@ from eth_keys import keys  # <-- Added for signing
 from eth_utils import keccak
 
 class Node:
-    def __init__(self, node_id, node_name, node_type, registration_url, key_path, node_url):
+    def __init__(self, node_id, node_name, node_type, registration_url, key_path, node_url, rpc_url):
         """
         Initialize the Node with its ID, Name, Type, and Cloud API URL.
 
@@ -23,10 +23,11 @@ class Node:
         self.node_id = node_id
         self.node_name = node_name
         self.node_type = node_type  # Generalized for any node type
+        self.rpc_URL =  rpc_url
         self.registration_url = registration_url  # Cloud Node API URL
         self.public_key = self.load_public_key(key_path)  # Load Public Key from file
         self.node_url = node_url  # URL of the node
-        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_fog/"
+        self.root_path = os.path.dirname(os.path.abspath(__file__))
         self.private_key =  os.path.join(self.root_path, "data/key.priv")
         self.address = self.get_address()  # Get the address of the node
 
@@ -85,18 +86,18 @@ class Node:
             "public_key": self.public_key,
             "address": self.address,
             "node_url": self.node_url,
+            "rpcURL" : self.rpc_URL,
             "signature": self.sign_identity()
         }
-
-        # Save the data to a JSON file named "node-details.json"
-        with open("node-details.json", "w") as json_file:
-            json.dump(data, json_file, indent=4)
 
         response = requests.post(f"{self.registration_url}/register-node", json=data)
         if response.status_code == 200:
             print(f"{self.node_type.capitalize()} Node {self.node_id} Registered Successfully as '{self.node_name}'!")
             print(f"Public Key Sent: {self.public_key}")
             print(f"Node Address: {self.address}")
+            # Save the data to a JSON file named "node-details.json"
+            with open("node-details.json", "w") as json_file:
+                json.dump(data, json_file, indent=4)
             print(response.json())
         else:
 
@@ -211,12 +212,12 @@ if __name__ == "__main__":
         command = sys.argv[1]
 
         if command == "register":
-            if len(sys.argv) != 8:
+            if len(sys.argv) != 9:
                 print("Usage: python client_node_reg_request.py register <node_id> <node_name> <node_type> <registration_url> <key_path> <reg_node_url>")
                 sys.exit(1)
 
-            node_id, node_name, node_type, registration_url, key_path, reg_node_url = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path, reg_node_url)
+            node_id, node_name, node_type, registration_url, key_path, reg_node_url, rpc_url = sys.argv[2:]
+            node = Node(node_id, node_name, node_type, registration_url, key_path, reg_node_url, rpc_url)
             node.register_node()
 
         elif command == "read":
@@ -225,7 +226,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
             data = node.read_data()
 
         elif command == "write":
@@ -234,7 +235,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
             node.write_data()
 
         elif command == "transmit":
@@ -243,7 +244,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
             node.transmit_data()
 
         elif command == "execute":
@@ -252,7 +253,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
-            node = Node(node_id, node_name, node_type, registration_url, key_path, "")
+            node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
             node.execute_command()
 
         else:
