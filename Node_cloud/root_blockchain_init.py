@@ -7,7 +7,7 @@ from eth_keys import keys
 
 class BlockchainInit:
     def __init__(self):
-        self.root_path = "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/"
+        self.root_path = os.path.dirname(os.path.abspath(__file__))
         self.prefunded_account_file = os.path.join(self.root_path, "prefunded_keys.json")
         self.config_file = os.path.join(self.root_path, "qbftConfigFile.json")
         self.data_path = os.path.join(self.root_path, "data/")
@@ -42,24 +42,6 @@ class BlockchainInit:
             "private_key": account._private_key.hex(),  # Store as hex
             "address": account.address
         }
-    
-
-    #---------------------Update Validators----------------------------
-
-    # def start_validator_event_listener():
-    #     try:
-    #         process = subprocess.Popen(
-    #             ["node", "/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/interact.js", "listenForValidatorProposals"],
-    #             stdout=subprocess.PIPE,
-    #             stderr=subprocess.PIPE,
-    #             text=True
-    #         )
-
-    #         print("Validator proposal event listener started (running in background)...")
-    #         return process  # You can keep a reference to manage the process (e.g., stop later)
-    #     except Exception as e:
-    #         print(" Failed to start event listener:", e)
-    #         return None  
 
     #---------------------Create QBFT config file----------------------------
     def create_qbft_file(self, num_prefunded_accounts, num_validators):
@@ -77,7 +59,6 @@ class BlockchainInit:
 
         prefunded_accounts = [self.generate_account() for _ in range(num_prefunded_accounts)]
 
-        # Create the QBFT configuration
         qbft_config = {
             "genesis": {
                 "config": {
@@ -106,7 +87,6 @@ class BlockchainInit:
             }
         }
 
-        # Save the configuration file
         with open(self.config_file, "w") as f:
             json.dump(qbft_config, f, indent=4)
 
@@ -160,8 +140,6 @@ class BlockchainInit:
             else:
                 addresses = []
                 
-
-            # Append the new address if it's not already in the list
             if cleaned_address not in addresses:
                 addresses.append(cleaned_address)
 
@@ -200,18 +178,14 @@ class BlockchainInit:
                 print(f"Error encoding extraData: {encode_result.stderr}\n")
                 return
 
-            # Read the generated extraData
             with open(extra_data_file, "r") as file:
                 extra_data_rlp = file.read().strip()
 
-            # Load the genesis.json file
             with open(self.genesis_file, "r") as file:
                 genesis_data = json.load(file)
 
-            # Update extraData field in genesis.json
             genesis_data["extraData"] = extra_data_rlp
 
-            # Save the updated genesis.json file
             with open(self.genesis_file, "w") as file:
                 json.dump(genesis_data, file, indent=4)
 
@@ -225,19 +199,17 @@ class BlockchainInit:
         
         result = subprocess.run(
             ["besu", "public-key", "export-address", "--node-private-key-file=" + self.private_key],
-            capture_output=True,  # Capture stdout
-            text=True,  # Treat output as a string
-            check=False  # Do not raise exception on failure
+            capture_output=True,  
+            text=True, 
+            check=False  
         )
 
-        # Extract only the last line and remove "0x" prefix
         if result.returncode == 0:
             last_line = result.stdout.strip().split("\n")[-1]  # Get last line
             last_line = last_line[2:] if last_line.startswith("0x") else last_line  # Remove "0x" if present
 
             print(f"Extracted Node Address (without 0x): {last_line}")
 
-            # Save modified node address to file
             with open(node_address_file, "w") as file:
                 file.write(last_line + "\n")
 
@@ -252,13 +224,8 @@ class BlockchainInit:
 
         with open(self.prefunded_account_file, "r") as f:
             data = json.load(f)
-        # Extract addresses
         addresses = [entry["address"] for entry in data["prefunded_accounts"]]
-        # Example: print them
-        for addr in addresses:
-            print(f"Address: {addr}")  # Example action for each address
 
-        # Optional: get a single address, like the first one
         first_address = addresses[0]
 
         try:
@@ -281,14 +248,13 @@ class BlockchainInit:
                 text=True
             )
 
-            # Read output in real-time
             for line in process.stdout:
                 print("[Besu Output]:", line.strip())
 
             for line in process.stderr:
                 print("[Besu Error]:", line.strip())
 
-            process.wait()  # Wait for process to complete
+            process.wait()  
 
         except FileNotFoundError:
             print("Error: Besu is not installed or not found in PATH.")
@@ -300,22 +266,17 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         method_name = sys.argv[1]
-        method_args = sys.argv[2:]  # Capture additional arguments (if any)
+        method_args = sys.argv[2:] 
 
-        # Check if the method exists in the class
         if hasattr(blockchain_init, method_name):
             method = getattr(blockchain_init, method_name)
 
-            # Check if it's callable
             if callable(method):
-                # Get function argument count (excluding `self`)
                 arg_count = method.__code__.co_argcount - 1  # Subtract 1 for `self`
                 
                 if len(method_args) == arg_count:
-                    # Call method dynamically with arguments (if required)
                     method(*method_args)
                 elif arg_count == 0:
-                    # Call method without arguments
                     method()
                 else:
                     print(f"Error: Function '{method_name}' requires {arg_count} argument(s), but {len(method_args)} were given.")

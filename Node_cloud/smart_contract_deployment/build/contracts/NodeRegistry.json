@@ -28294,12 +28294,12 @@
     "1337": {
       "events": {},
       "links": {},
-      "address": "0x24dbb8F97667535B834CCd983cc74905E07a1B0f",
-      "transactionHash": "0x5619e91e10a489481fda82d86462360f8aa5634cb605f727067356b0f1a57bc5"
+      "address": "0x95505E45Be9E63112b0369e59c98F73213a00a25",
+      "transactionHash": "0x55233c1dc1a12be51cc5ead00ae0561f8e3d60df64802536021bcbfdafd73950"
     }
   },
   "schemaVersion": "3.4.16",
-  "updatedAt": "2025-04-17T22:11:33.569Z",
+  "updatedAt": "2025-04-19T01:54:02.196Z",
   "networkType": "ethereum",
   "devdoc": {
     "kind": "dev",

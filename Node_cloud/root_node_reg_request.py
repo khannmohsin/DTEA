@@ -11,15 +11,7 @@ from eth_utils import keccak
 
 class Node:
     def __init__(self, node_id, node_name, node_type, registration_url, key_path, node_url, rpc_url):
-        """
-        Initialize the Node with its ID, Name, Type, and Cloud API URL.
 
-        :param node_id: Unique identifier for the node
-        :param node_name: Human-readable name for the node
-        :param node_type: Type of node (sensor, edge, fog, cloud, actuator)
-        :param registration_url: API endpoint of the registration server for registration
-        :param key_path: Path to the public key file
-        """
         self.node_id = node_id
         self.node_name = node_name
         self.node_type = node_type 
@@ -38,9 +30,8 @@ class Node:
         )
         if result.returncode == 0:
             last_line = result.stdout.strip().split("\n")[-1]  # Get last line
-            # cleaned_address = last_line[2:] if last_line.startswith("0x") else last_line  # Remove "0x" prefix
             
-            print(f"Extracted Node Address: {last_line}\n")
+            print(f"\nExtracted Node Address: {last_line}\n")
 
             return last_line
 
@@ -80,7 +71,7 @@ class Node:
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
-            "node_type": self.node_type,  # Node type added
+            "node_type": self.node_type, 
             "public_key": self.public_key,
             "address": self.address,
             "node_url": self.node_url,
@@ -90,7 +81,7 @@ class Node:
 
         response = requests.post(f"{self.registration_url}/register-node", json=data)
         if response.status_code == 200:
-            print(f"{self.node_type.capitalize()} Node {self.node_id} Registered Successfully as '{self.node_name}'!")
+            print(f"{self.node_type.capitalize()} Node '{self.node_name}' (ID: {self.node_id}) Registered Successfully!")
             print(f"Public Key Sent: {self.public_key}")
             print(f"Node Address: {self.address}")
             with open("node-details.json", "w") as json_file:
@@ -98,14 +89,15 @@ class Node:
             print(response.json())
         else:
             
-            print(f"\nError Registering {self.node_type.capitalize()} \nNode {self.node_id}: {response.json()}")
+            print(f"Error Registering Node '{self.node_name}' (ID: {self.node_id}):")
+            print(json.dumps(response.json(), indent=4))
 
     def read_data(self):
 
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
-            "node_type": self.node_type,  # Node type added
+            "node_type": self.node_type,  
             "public_key": self.public_key,
             "address": self.address,
             "signature": self.sign_identity()
@@ -131,7 +123,7 @@ class Node:
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
-            "node_type": self.node_type,  # Node type added
+            "node_type": self.node_type, 
             "public_key": self.public_key,
             "address": self.address,
             "signature": self.sign_identity()
@@ -156,7 +148,7 @@ class Node:
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
-            "node_type": self.node_type,  # Node type added
+            "node_type": self.node_type,  
             "public_key": self.public_key,
             "address": self.address,
             "signature": self.sign_identity()
@@ -203,33 +195,13 @@ class Node:
             return None
             
 
-    # def transmit_data(self):
-    #     """Transmit data to the Cloud Node."""            
-
-    # def execute_command(self):
-    #     """Execute a command on the Cloud Node."""
-    #     response = requests.post(f"{self.registration_url}/execute", json={"command": command})
-    #     if response.status_code == 200:
-    #         print("Command Executed Successfully!")
-    #     else:
-    #         print(f"Error Executing Command: {response.json()}")
-
-    # def write_data(self, data):
-    #     """Write data to the Cloud Node."""
-    #     response = requests.post(f"{self.registration_url}/write", json=data)
-    #     if response.status_code == 200:
-    #         print("Data Written Successfully!")
-    #     else:
-    #         print(f"Error Writing Data: {response.json()}")
-
-# Example: Register a Fog Node
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         command = sys.argv[1]
 
         if command == "register":
             if len(sys.argv) != 9:
-                print("Usage: python root_node_reg_request.py register <node_id> <node_name> <node_type> <registration_url> <key_path> <node_url>")
+                print("Usage: python root_node_reg_request.py register <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>, <node_url>, <rpc_url>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path, reg_node_url, rpc_url = sys.argv[2:]
@@ -238,7 +210,7 @@ if __name__ == "__main__":
 
         elif command == "read":
             if len(sys.argv) != 7:
-                print("Usage: python root_node_reg_request.py read <registration_url>")
+                print("Usage: python root_node_reg_request.py read <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
@@ -247,7 +219,7 @@ if __name__ == "__main__":
 
         elif command == "write":
             if len(sys.argv) != 7:
-                print("Usage: python root_node_reg_request.py write <registration_url> <data>")
+                print("Usage: python root_node_reg_request.py write <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
@@ -256,7 +228,7 @@ if __name__ == "__main__":
 
         elif command == "transmit":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py transmit <registration_url> <data>")
+                print("Usage: python root_node_reg_request.py transmit <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
@@ -265,7 +237,7 @@ if __name__ == "__main__":
 
         elif command == "execute":
             if len(sys.argv) != 7:
-                print("Usage: python fog_node.py execute <registration_url> <data>")
+                print("Usage: python root_node_reg_request.py execute <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
@@ -275,7 +247,7 @@ if __name__ == "__main__":
         else:
             print(f"Error: Unknown command '{command}'")
     else:
-        print("Usage: python fog_node.py <command> [arguments...]")
+        print("Usage: python root_node_reg_request.py <command> [arguments...]")
 
 
 

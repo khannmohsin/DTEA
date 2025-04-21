@@ -22,47 +22,46 @@ DESTINATION_DIR="$ROOT_PATH/data"
 
 # ------------------------------------------------Main Functions------------------------------------------------
 
-# **Function to Start Flask API (Cloud Node Registration)**
 start_flask() {
-    echo " Starting Cloud Node Flask API..."
+    echo "---------------------------------"
+    echo " Starting Root Node Flask API..."
+    echo "----------------------------------"
     osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL $FLASK_PORT\"" 
 }
 
 initialize_blockchain() {
-    # Check if qbftConfigFile.json is present
-
+    echo "-------------------------------"
     echo "Initializing Blockchain Root..."
+    echo "-------------------------------"
+    echo ""
     if [ -f "$ROOT_PATH/qbftConfigFile.json" ]; then
         echo "qbftConfigFile.json is already present."
     else
         echo "Creating qbftConfigFile..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_qbft_file 3 1
     fi
-
+    echo ""
     if [ -f "$ROOT_PATH/data/key.priv" ] && [ -f "$ROOT_PATH/data/key.pub" ]; then
         echo "Key files are already present."
     else
         echo "Generating keys..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" generate_keys
     fi
-
-    # Check if genesis.json is present
+    echo ""
     if [ -f "$ROOT_PATH/genesis/genesis.json" ]; then
         echo "genesis.json is already present."
     else
         echo "Generating genesis file..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" create_genesis_file "$ROOT_PATH/qbftConfigFile.json"
     fi
-
-    # Check if validator_address.json is present
+    echo ""
     if [ -f "$ROOT_PATH/genesis/validator_address.json" ]; then
         echo "validator_address.json is already present."
     else
         echo "Extracting the validator address..."
         $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" update_genesis_file
     fi
-
-    # Check if extraData.rlp is present
+    echo ""
     if [ -f "$ROOT_PATH/genesis/extraData.rlp" ]; then
         echo "extraData.rlp is already present."
     else
@@ -71,46 +70,49 @@ initialize_blockchain() {
     fi
 }
 
-# **Function to Start Blockchain**
 start_blockchain() {
+    echo "----------------------"
     echo "Starting Blockchain..."
+    echo "----------------------"
     osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_blockchain_node\""
 }
 
-# **Function to Stop Blockchain**
 stop_blockchain() {
+    echo "----------------------"
     echo "Stopping Blockchain..."
+    echo "----------------------"
+    echo ""
     pkill -f "besu"
     echo "Blockchain Stopped."
 }
 
-# **Function to Restart Blockchain**
 restart_blockchain() {
+    echo "----------------------"
+    echo "Restarting Blockchain..."
+    echo "----------------------"
     stop_blockchain
     sleep 2
     start_blockchain
 }
 
-
-listen_for_validator_updates(){
-    $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_validator_event_listener
-}
-
 reinitialize_blockchain() {
-    # Remove the data directory
-    echo "Reinitializing Blockchain Root and removing  data directory, genesis directory, qbftConfigFile, and prefunded_keys.json ..."
+    echo "--------------------------------------"
+    echo "Removing Previously Initialized Files"
+    echo "--------------------------------------"
+    echo ""
     rm -rf "$ROOT_PATH/data"
     rm -rf "$ROOT_PATH/genesis"
     rm -rf "$ROOT_PATH/qbftConfigFile.json"
     rm -rf "$ROOT_PATH/prefunded_keys.json"
     rm -rf "$ROOT_PATH/node-details.json"
-
-    # Reinitialize the blockchain
     initialize_blockchain
 }
 
 self_register(){
-    # Check if the correct number of arguments is provided
+    echo "-------------------------------"
+    echo "Starting Root Node Registration"
+    echo "-------------------------------"
+    echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
         echo "Error: Missing arguments for node registration."
         echo "Usage: ./start_root_services register <node_id> <node_name> <node_type>"
@@ -118,20 +120,18 @@ self_register(){
     fi
     # Extract arguments
     local node_id="$1"
-    echo "Node ID: $node_id"
+    echo "-> Node ID: $node_id"
     local node_name="$2"
-    echo "Node Name: $node_name"
+    echo "-> Node Name: $node_name"
     local node_type="$3"
-    echo "Node Type: $node_type"
+    echo "-> Node Type: $node_type"
     local root_url="http://127.0.0.1:$FLASK_PORT"
-    echo "Root URL: $root_url"
+    echo "-> Root Node URL: $root_url"
     local rpc_url="http://127.0.0.1:$BESU_PORT"
-    echo "rpl URL: $rpc_url"
+    echo "-> rpl URL: $rpc_url"
     local key_path="/$ROOT_PATH/data/key.pub"
-
-    echo "Key Path: $key_path"
-
-    # Check if Flask is running
+    echo "-> Key Path: $key_path"
+    echo ""
     if nc -z localhost "$FLASK_PORT"; then
         echo "Flask is already running on port $FLASK_PORT."
     else
@@ -147,138 +147,148 @@ self_register(){
     fi
     echo ""
 
-    # Check for existing keys
-    if [ -f "$key_path" ]; then
+    if [ ! -f "$key_path" ]; then
         echo "Key file not found. Initialize blockchain first."
+    else
         echo "Key file found. Continuing with registration..."
         $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" register "$node_id" "$node_name" "$node_type" "$root_url" "$key_path" "$NODE_URL" "$rpc_url"
     fi
 }
 
 node_read(){
-    # Check if the correct number of arguments is provided
+    echo "--------------------------"
+    echo "Starting Node Read Request"
+    echo "--------------------------"
+    echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
         echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
         exit 1
     fi
-    # Extract arguments
     local node_id="$1"
-    echo "Node ID: $node_id"
+    echo "-> Node ID: $node_id"
     local node_name="$2"
-    echo "Node Name: $node_name"
+    echo "-> Node Name: $node_name"
     local node_type="$3"
-    echo "Node Type: $node_type"
+    echo "-> Node Type: $node_type"
     local read_url="http://127.0.0.1:$4"
-    echo "Read URL: $read_url"
+    echo "-> Connecting Node URL: $read_url"
     local key_path="$ROOT_PATH/data/key.pub"
-    echo "Key Path: $key_path"
-
+    echo "-> Key Path: $key_path"
+    echo ""
     echo "Reading data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" read "$node_id" "$node_name" "$node_type" "$read_url" "$key_path"
 }
 
 
 node_write(){
+    echo "---------------------------"
+    echo "Starting Node Write Request"
+    echo "---------------------------"
+    echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
+        echo "Usage: ./start_root_services.sh write-data <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
-    # Extract arguments
     local node_id="$1"
-    echo "Node ID: $node_id"
+    echo "-> Node ID: $node_id"
     local node_name="$2"
-    echo "Node Name: $node_name"
+    echo "-> Node Name: $node_name"
     local node_type="$3"
-    echo "Node Type: $node_type"
+    echo "-> Node Type: $node_type"
     local write_url="http://127.0.0.1:$4"
-    echo "Write URL: $write_url"
+    echo "-> Connecting Node URL: $write_url"
     local key_path="$ROOT_PATH/data/key.pub"
-    echo "Key Path: $key_path"
-
+    echo "-> Key Path: $key_path"
+    echo ""
     echo "Writing data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
 }
 
 
 node_transmit(){
+    echo "------------------------------"
+    echo "Starting Node Transmit Request"
+    echo "------------------------------"
+    echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
+        echo "Usage: ./start_root_services.sh transamit-date <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
-    # Extract arguments
     local node_id="$1"
-    echo "Node ID: $node_id"
+    echo "-> Node ID: $node_id"
     local node_name="$2"
-    echo "Node Name: $node_name"
+    echo "-> Node Name: $node_name"
     local node_type="$3"
-    echo "Node Type: $node_type"
+    echo "-> Node Type: $node_type"
     local transmit_url="http://127.0.0.1:$4"
-    echo "Transmit URL: $transmit_url"
+    echo "-> Connecting Node URL: $transmit_url"
     local key_path="$ROOT_PATH/data/key.pub"
-
+    echo "Key Path: $key_path"
+    echo ""
     echo "Transmitting data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
 
 node_execute(){
+    echo "-----------------------------"
+    echo "Starting Node Execute Request"
+    echo "-----------------------------"
+    echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_fog_services.sh register <node_id> <node_name> <node_type> <port>"
+        echo "Usage: ./start_root_services.sh execute-data <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
-    # Extract arguments
     local node_id="$1"
-    echo "Node ID: $node_id"
+    echo "-> Node ID: $node_id"
     local node_name="$2"
-    echo "Node Name: $node_name"
+    echo "-> Node Name: $node_name"
     local node_type="$3"
-    echo "Node Type: $node_type"
+    echo "-> Node Type: $node_type"
     local execute_url="http://127.0.0.1:$4"
-    echo "Execute URL: $execute_url"
+    echo "-> Connecting Node URL: $execute_url"
     local key_path="$ROOT_PATH/data/key.pub"
-    echo "Key Path: $key_path"
-
+    echo "-> Key Path: $key_path"
+    echo ""
     echo "Executing data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }
 
 smart_contract_deployment() {
-    # Check if the NodeRegistry.json file exists
+    echo "------------------------------------------"
+    echo "Starting Smart Contract Deployment Request"
+    echo "------------------------------------------"
+    echo ""
     echo "Insert the private key of the account to deploy the smart contract:"
     read -r private_key
     if [ -z "$private_key" ]; then
         echo "Private key is required to deploy the smart contract."
         exit 1
     fi
-    bash /Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_cloud/smart_contract_deployment/compile_deploy_contract.sh $private_key
+    bash $ROOT_PATH/smart_contract_deployment/compile_deploy_contract.sh $private_key
     if [ -f "$SOURCE_FILE" ]; then
         echo "Deploying smart contract..."
         cp "$SOURCE_FILE" "$DESTINATION_DIR"
+        echo ""
         echo "Smart contract deployed successfully to $DESTINATION_DIR"
     else
         echo "Smart contract file not found. Please deploy the smart contract first."
     fi
 }
 
-
-# **Function to Show Help Message**
-
-
-
-# Check if the user provided an operation
 if [ "$#" -lt 1 ]; then
+    echo "-----------------------------"
     echo "Error: No operation specified"
-    echo "Usage: $0 help"
+    echo "-----------------------------"
+    echo ""
     exit 1
 fi
 
-
-# **Main Execution Logic**
 case "$1" in
     start-flask)
         start_flask
@@ -294,9 +304,6 @@ case "$1" in
         ;;
     restart-chain-root)
         restart_blockchain
-        ;;
-    update-validators)
-        listen_for_validator_updates
         ;;
     reinit-chain-root)
         reinitialize_blockchain

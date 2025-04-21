@@ -15,11 +15,9 @@ rm -f "$TRUFFLE_CONFIG" "$DEPLOY_SCRIPT"  # Remove old files if they exist
 PRIVATE_KEY="$1"  # Accept private key as an argument to the script
 BESU_RPC_URL="http://127.0.0.1:8545"
 
-echo "Starting Smart Contract Deployment on Besu..."
-
+echo ""
 # Step 1: Generate `truffle-config.js` dynamically
 echo "Generating $TRUFFLE_CONFIG..."
-
 cat <<EOL > "$TRUFFLE_CONFIG"
 const HDWalletProvider = require("@truffle/hdwallet-provider");
 
@@ -45,7 +43,7 @@ module.exports = {
 EOL
 
 echo "$TRUFFLE_CONFIG generated successfully!"
-
+echo ""
 # Step 2: Ensure the `migrations` directory exists
 if [ ! -d "$MIGRATIONS_DIR" ]; then
     echo "Creating migrations directory..."
@@ -64,7 +62,7 @@ module.exports = function (deployer) {
 EOL
 
 echo "$DEPLOY_SCRIPT generated successfully!"
-
+echo ""
 # # Step 4: Install dependencies if not installed
 # if [ ! -d "node_modules" ]; then
 #     echo "Installing dependencies..."
@@ -74,7 +72,7 @@ echo "$DEPLOY_SCRIPT generated successfully!"
 # Step 5: Compile the contracts
 echo "Compiling smart contracts..."
 npx truffle compile
-
+echo ""
 # Step 6: Deploy contracts to Besu
 echo "Deploying contracts to Besu Blockchain..."
 npx truffle migrate --network $NETWORK
