@@ -286,7 +286,7 @@ async function getCapabilityToken(fromNodeSignature, toNodeSignature) {
         const token = await contract.methods.getToken(fromNodeSignature, toNodeSignature).call();
 
         console.log("Capability Token Info:");
-        console.log("-> Policy:", token.policy);
+        console.log("Policy:", token.policy);
         console.log("-> Issued At (Unix):", token.issuedAt.toString());
         console.log("-> Issued At (UTC):", new Date(Number(token.issuedAt) * 1000).toISOString());
         console.log("-> Is Issued:", token.isIssued);

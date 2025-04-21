@@ -1,16 +1,16 @@
 {
     "prefunded_accounts": [
         {
-            "private_key": "9ca1b519ef4b79b6f2e75170ac1df8d2b04f12e5824b8d16928dc83dd1a6ad90",
-            "address": "0x69e5afB7456dF571F46A9b2a4bB31988BA3C058a"
+            "private_key": "b512d5378e3e5525adce5a3913f54b6d116f136460b28f05d1ebc5565d2cb432",
+            "address": "0x88009203524577E6880028B182E4f128899cBC30"
         },
         {
-            "private_key": "4d479aafb65d4660f1c5e830dbf3137e307bf450566e5819cadb3bc69e808838",
-            "address": "0xCFb574120D418b202A29C6a04B2c385270fDE485"
+            "private_key": "beffb92c98a86cca13c2ce508190ad6346cb4f2db2427ac605e47f2c8e34060d",
+            "address": "0x277313A824FFe4117F3028cC92312A53bfC9aa64"
         },
         {
-            "private_key": "8411dbe1522f3ae36fde2fb93b3abed1245201d93a1feb9625c6ca7222333365",
-            "address": "0x4dfca9e2f75892b227fea0ee1912660873B05Db7"
+            "private_key": "591816a2542413492ba67732be3e356e8a577c1b030d68918ce8b74f85b9da65",
+            "address": "0x732C773C1ffBc06d56e244fe7F9d266Ec7a27a51"
         }
     ]
 }

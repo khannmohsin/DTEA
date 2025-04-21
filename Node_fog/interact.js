@@ -640,7 +640,7 @@ if (require.main === module) {
         }
         
         if (command === "getValidatorsByBlockNumber") {
-            await getValidatorsByBlockNumber(rpcURL);
+            await getValidatorsByBlockNumber(rpcURL_GLOBAL);
         }
         if (command === "emitValidatorProposalToChain") {
             const validatorAddress = args[1];

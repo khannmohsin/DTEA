@@ -1,9 +1,0 @@
-{
-    "node_id": "FG-002",
-    "node_name": "Fog_Node",
-    "node_type": "Fog",
-    "public_key": "0xc847a38ec94f36bb31c5b2661fcc4918dc9eddde1ee36a7ef3f6cbd3def7a1c3f9c7f5576766f244b545ada849d28e333bdc6cc4b605023476c6e5f8fcce36cb",
-    "address": "0x7c828305d5567690348a5ac768f76af137b7f02e",
-    "node_url": "http://127.0.0.1:5002",
-    "signature": "0xf37edca7685ae5241bf4504ee4844704c54168525c0df8d77b3b9ceb3d967d401076de05eb28ae2ef78880e95681ed7b782777d122c1865a9ee59129089cb0f900"
-}
