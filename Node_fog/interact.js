@@ -64,21 +64,20 @@ async function emitValidatorProposalToChain(validatorAddress) {
 
 async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, address, rpcURL, receiverNodeTypeStr, nodeSignature, regByNodeSig) {
     let web3ToUse = web3; 
-    const isRegisteredByValidator = await isValidator(regByNodeSig).catch(() => false);
-    if (isRegisteredByValidator) {
-        console.log("Registered by a validator. Proceeding with registration...");
-
-    } else {
+    const isRegisteredByValidator = await isValidator(regByNodeSig);
+    if (!isRegisteredByValidator) {
         const rpcMapping = Object.fromEntries(
             Object.entries(await watchRpcUrlMappings()).map(([key, value]) => [key.toLowerCase(), value.toLowerCase()])
         ); 
-        console.log(rpcMapping);
-        const validatorAddresses = await getValidatorsByBlockNumber(rpcURL_GLOBAL).catch(() => false);; // e.g., returns [ '0x5b77a5951a0e88af774ea5ee3da3d90854b79cce' ]
-        const validator = validatorAddresses[0].toLowerCase(); // 🔧 ensure lowercase for comparison
+        // console.log(rpcMapping);
+        const validatorAddresses = await getValidatorsByBlockNumber(rpcURL_GLOBAL);
+        const validator = validatorAddresses[0].toLowerCase(); 
         if (rpcMapping[validator]) {
-            console.log(`Validator ${validator} is mapped to RPC URL: ${rpcMapping[validator]}`);
+            // console.log(`Validator ${validator} is mapped to RPC URL: ${rpcMapping[validator]}`);
             web3ToUse = new Web3(rpcMapping[validator]);
-        } else {
+        } 
+        
+        else {
             console.log(`Validator ${validator} is not found in the RPC mapping.`);
         }
     }
@@ -103,7 +102,7 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
         const signedTx = await web3ToUse.eth.accounts.signTransaction(tx, privateKey);
         const receipt = await web3ToUse.eth.sendSignedTransaction(signedTx.rawTransaction);
 
-        console.log("Node Registered! Transaction Hash:", receipt.transactionHash);
+        console.log("Transaction Hash:", receipt.transactionHash);
 
         for (const log of receipt.logs) {
             if (log.address.toLowerCase() === contractAddress.toLowerCase()) {
@@ -113,8 +112,8 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
 
                 if (eventAbi) {
                     const decoded = web3.eth.abi.decodeLog(eventAbi.inputs, log.data, log.topics.slice(1));
-                    console.log(` Event: ${eventAbi.name}`);
-                    console.log(decoded);
+                    // console.log(` Event: ${eventAbi.name}`);
+                    // console.log(decoded);
 
                     if (eventAbi.name === "NodeRegistered") {
                         console.log(`Node Signature: ${decoded.nodeSignature}`);
@@ -130,21 +129,20 @@ async function registerNode(nodeId, nodeName, senderNodeTypeStr, publicKey, addr
 
 async function issueCapabilityToken(fromNodeSignature, toNodeSignature) {
     let web3ToUse = web3; 
-    const isRegisteredByValidator = await isValidator(toNodeSignature).catch(() => false);
-    if (isRegisteredByValidator) {
-        console.log("Registered by a validator. Proceeding with registration...");
-
-    } else {
+    const isRegisteredByValidator = await isValidator(toNodeSignature);
+    if (!isRegisteredByValidator) {
         const rpcMapping = Object.fromEntries(
             Object.entries(await watchRpcUrlMappings()).map(([key, value]) => [key.toLowerCase(), value.toLowerCase()])
         ); 
-        console.log(rpcMapping);
-        const validatorAddresses = await getValidatorsByBlockNumber(rpcURL_GLOBAL).catch(() => false); // e.g., returns [ '0x5b77a5951a0e88af774ea5ee3da3d90854b79cce' ]
-        const validator = validatorAddresses[0].toLowerCase(); // 🔧 ensure lowercase for comparison
+        // console.log(rpcMapping);
+        const validatorAddresses = await getValidatorsByBlockNumber(rpcURL_GLOBAL);
+        const validator = validatorAddresses[0].toLowerCase(); 
         if (rpcMapping[validator]) {
-            console.log(`Validator ${validator} is mapped to RPC URL: ${rpcMapping[validator]}`);
+            // console.log(`Validator ${validator} is mapped to RPC URL: ${rpcMapping[validator]}`);
             web3ToUse = new Web3(rpcMapping[validator]);
-        } else {
+        } 
+        
+        else {
             console.log(`Validator ${validator} is not found in the RPC mapping.`);
         }
     }
@@ -190,20 +188,19 @@ async function issueCapabilityToken(fromNodeSignature, toNodeSignature) {
 async function revokeCapabilityToken(fromNodeSignature, toNodeSignature) {
     let web3ToUse = web3; 
     const isRegisteredByValidator = await isValidator(toNodeSignature);
-    if (isRegisteredByValidator) {
-        console.log("Registered by a validator. Proceeding with registration...");
-
-    } else {
+    if (!isRegisteredByValidator) {
         const rpcMapping = Object.fromEntries(
             Object.entries(await watchRpcUrlMappings()).map(([key, value]) => [key.toLowerCase(), value.toLowerCase()])
-        );
-        console.log(rpcMapping);
-        const validatorAddresses = await getValidatorsByBlockNumber(rpcURL_GLOBAL); 
+        ); 
+        // console.log(rpcMapping);
+        const validatorAddresses = await getValidatorsByBlockNumber(rpcURL_GLOBAL);
         const validator = validatorAddresses[0].toLowerCase(); 
         if (rpcMapping[validator]) {
-            console.log(`Validator ${validator} is mapped to RPC URL: ${rpcMapping[validator]}`);
+            // console.log(`Validator ${validator} is mapped to RPC URL: ${rpcMapping[validator]}`);
             web3ToUse = new Web3(rpcMapping[validator]);
-        } else {
+        } 
+        
+        else {
             console.log(`Validator ${validator} is not found in the RPC mapping.`);
         }
     }
@@ -536,16 +533,16 @@ async function watchRpcUrlMappings() {
             toBlock
         });
 
-        if (pastEvents.length === 0) {
-            console.log("No RpcUrlMapped events found in the specified range.");
-        }
+        // if (pastEvents.length === 0) {
+        //     console.log("No RpcUrlMapped events found in the specified range.");
+        // }
 
         const rpcMapping = {};
         for (const event of pastEvents) {
             const nodeAddress = event.returnValues.nodeAddress;
             const rpcURL = event.returnValues.rpcURL;
             rpcMapping[nodeAddress] = rpcURL;
-            console.log(`${nodeAddress} : ${rpcURL}`);
+            // console.log(`${nodeAddress} : ${rpcURL}`);
         }
         return rpcMapping;
 
@@ -672,8 +669,11 @@ if (require.main === module) {
                 senderNodeTypeStr,
                 publicKey,
                 address,
+                rpcURL,
                 receiverNodeTypeStr,
-                nodeSignature
+                nodeSignature,
+                regByNodeSig
+
             ] = args.slice(1);
 
             await registerNode(
@@ -682,8 +682,10 @@ if (require.main === module) {
                 senderNodeTypeStr,
                 publicKey,
                 address,
+                rpcURL,
                 receiverNodeTypeStr,
-                nodeSignature
+                nodeSignature,
+                regByNodeSig
             );
         }
     })();

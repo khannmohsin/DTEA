@@ -199,7 +199,7 @@ class NodeRegistry:
                         print("---------------------------------\n")
                         # print(f"Proposing Validator with address: {new_addresses}")
                         for new_validator in new_addresses:
-                            print(f"\nProposing Validator with address: {new_validator}")
+                            print(f"Proposing Validator with address: {new_validator}")
                             response = self.proposeValidator(new_validator, "true")
                             print(f"Proposed {new_validator} → Response: {response}")
                     # else:

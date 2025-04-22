@@ -13,19 +13,19 @@ class AcknowledgementSender:
         self.enode_file = enode_file
 
     def get_enode(self):
-        # payload = {
-        #     "jsonrpc": "2.0",
-        #     "method": "admin_nodeInfo",
-        #     "params": [],
-        #     "id": 1
-        # }
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "admin_nodeInfo",
+            "params": [],
+            "id": 1
+        }
 
         try:
-            with open(self.enode_file, "r") as file:
-                enode_url = file.read().strip()
-            # response = requests.post(self.besu_rpc_url, json=payload, headers={"Content-Type": "application/json"})
-            # data = response.json()
-            # enode_url = data.get("result", {}).get("enode", "")
+        #     with open(self.enode_file, "r") as file:
+        #         enode_url = file.read().strip()
+            response = requests.post(self.besu_rpc_url, json=payload, headers={"Content-Type": "application/json"})
+            data = response.json()
+            enode_url = data.get("result", {}).get("enode", "")
 
             if enode_url:
                 
@@ -33,13 +33,16 @@ class AcknowledgementSender:
                 if match:
                     return enode_url  
             return None
-
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching enode: {e}")
             return None
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            return None
+        # except FileNotFoundError as e:
+        #     print(f"Error: {e}")
+        #     return None
+        # except Exception as e:
+        #     print(f"Unexpected error: {e}")
+        #     return None
 
 
     def send_acknowledgment(self, node_id):        

@@ -70,6 +70,7 @@ class NodeRegistry:
             ], capture_output=True, text=True)
 
             output = result.stdout.strip()
+            print(f"DEBUG------> {result}" )
 
             if result.returncode != 0:
                 return "error", result.stderr.strip(), output  
@@ -320,6 +321,16 @@ class NodeRegistry:
                 print(f"{key}: {value}")
             print("---------------------")
 
+            # if os.path.exists(self.node_details):
+            #     with open(self.node_details, "r") as json_file:
+            #         node_data = json.load(json_file)
+            #         node_id = node_data.get("node_id")
+            #         node_type = node_data.get("node_type")
+            #         node_signature = node_data.get("signature")
+            # else:
+            #     print("Details of this Node not found. Register First.")
+            #     return jsonify({"status": "error", "message": "Details of the connected node not found."}), 404
+            
             verify_result = self.verify_node_identity(data)
             print("\nChecking Received Node Signature...")
             if verify_result is True:
@@ -346,7 +357,7 @@ class NodeRegistry:
                     print("Node is not registered on the blockchain. Proceeding with registration.")
                     status, message, raw_output = self.register_node_on_chain(
                         data["node_id"], data["node_name"], data["node_type"], data["public_key"],
-                        data["address"], node_type, data["node_url"], data["signature"], node_signature
+                        data["address"], data["rpcURL"], node_type, data["signature"], node_signature
                     )
 
                     if status == "success":
@@ -361,10 +372,11 @@ class NodeRegistry:
                         if data["address"] in get_All_validators:
                             print("Address already exists. This is a Root chain validator")
                             get_All_validators = self.get_all_validators()
-                            print("All Validators:", get_All_validators)
+                            # print("All Validators:", get_All_validators)
                             return jsonify({"status": "success", "message": f"Node{data['node_type']} with ID: {data['node_id']} is a root chain. It is already registered as a validator."}), 200
 
                         print(f"Sending acknowledgment to the {data['node_type']} with ID: {data['node_id']}")
+                        print("All Validators:", get_All_validators)
 
                         if data["node_type"] != "Sensor" or data["node_type"] != "Activator":
                             cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file, self.enode_file)
@@ -412,7 +424,7 @@ class NodeRegistry:
 
                         else:
                             print(f"{data['node_id']} is not a validator.\n")
-                            return jsonify({"status": "success", "message": f"Registration Successful: Node {data['address']} not a Validator."}), 200
+                            return jsonify({"status": "success", "message": f"Registration Successful: Node {data['node_id']}: {data['node_name']} not a Validator."}), 200
                 
                     else:
                         print("Error in registering node on the blockchain:", message)
