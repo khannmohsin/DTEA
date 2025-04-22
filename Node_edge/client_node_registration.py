@@ -375,7 +375,8 @@ class NodeRegistry:
                             return jsonify({"status": "success", "message": f"Node{data['node_type']} with ID: {data['node_id']} is a root chain. It is already registered as a validator."}), 200
 
                         print("All Validators:", get_All_validators)
-
+                        # print("DEBUG-----")
+                        # print(data["node_type"])
                         if data["node_type"] != "Sensor" and data["node_type"] != "Activator":
                             print(f"Sending acknowledgment to the {data['node_type']} with ID: {data['node_id']}")
                             cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file, self.enode_file)
@@ -402,12 +403,10 @@ class NodeRegistry:
                                 print("Waiting for peers to increase...")
                                 time.sleep(5)
 
-
                             if self.checkValidator(node_signature):
                                 emitValidatorProposal = self.emitValidatorProposalToChain(data["address"])
                                 print("Emit Validator Proposal Response:", emitValidatorProposal)
                                 print("Proposing the validator...")
-
                             # response = self.proposeValidator(data["address"], "true")
                             # print("DEBUG-------> Propose Validator Response:", response)
                             

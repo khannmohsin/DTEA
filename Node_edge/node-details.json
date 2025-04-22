@@ -1,0 +1,10 @@
+{
+    "node_id": "EG-001",
+    "node_name": "Edge_Node",
+    "node_type": "Edge",
+    "public_key": "0xb2e37e8975f723ed156b5e54771b718d32452adc083a667ea26673b1fd2a647b553c39557737dd6e2824e3c909e23d21818d2db8ddd04b601099aeb39d763a87",
+    "address": "0x37858741ef97871acb381d0d3ad1db45c07ddf34",
+    "node_url": "http://127.0.0.1:5002",
+    "rpcURL": "http://127.0.0.1:8547",
+    "signature": "0x23f4dce8a51c6ecc894297555942e40edfddbd32a2f0c23f09a86e716cfa1889364a27d81ce0e30c7a68063fbb024dc8c5c2c45aad9056d78761b8bec4bcc20600"
+}

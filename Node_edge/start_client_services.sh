@@ -4,12 +4,28 @@
 PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/python"
 
 
+# Network Configuration
+FLASK_PORT=5002
+BESU_PORT=8547
+NODE_URL=http://127.0.0.1:$FLASK_PORT
+BESU_RPC_URL=http://127.0.0.1:$BESU_PORT
+P2P_PORT=30305
+
+
 # Define paths to Python scripts
 ROOT_PATH="$(pwd)"
-KEY_GENERATION_PATH="$ROOT_PATH/end_node_initialization.py"
+BLOCKCHAIN_SCRIPT="$ROOT_PATH/client_blockchain_init.py"
+FLASK_SCRIPT="$ROOT_PATH/client_node_registration.py"
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
 
 # ------------------------------------------------Main Functions------------------------------------------------
+
+start_flask() {
+    echo "----------------------------------"
+    echo " Starting Client Node Flask API..."
+    echo "----------------------------------"
+    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV $FLASK_SCRIPT $BESU_RPC_URL $FLASK_PORT\"" 
+}
 
 
 initialize_chain_client() {
@@ -21,8 +37,38 @@ initialize_chain_client() {
         echo "Key files are already present."
     else
         echo "Generating keys..."
-        $PYTHON_V_ENV "$KEY_GENERATION_PATH" generate_keys
+        $PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" generate_keys
     fi
+}
+
+start_blockchain() {
+    echo "----------------------"
+    echo "Starting Blockchain..."
+    echo "----------------------"
+    echo ""
+    if [ ! -f "$ROOT_PATH/genesis/genesis.json" ] && [ ! -f "$ROOT_PAT/data/NodeRegistry.json" ]; then
+        echo "Acknowledgement not received from the connecting node. Please check the Flask script."
+        exit 1
+    fi
+    osascript -e "tell application \"Terminal\" to do script \"$PYTHON_V_ENV "$BLOCKCHAIN_SCRIPT" start_blockchain_node $P2P_PORT $BESU_PORT\""
+}
+
+stop_blockchain() {
+    echo "----------------------"
+    echo "Stopping Blockchain..."
+    echo "----------------------"
+    echo ""
+    pkill -f "besu"
+    echo "Blockchain Stopped."
+}
+
+restart_blockchain() {
+    echo "----------------------"
+    echo "Restarting Blockchain..."
+    echo "----------------------"
+    stop_blockchain
+    sleep 2
+    start_blockchain
 }
 
 reinitialize_chain_client() {
@@ -32,7 +78,9 @@ reinitialize_chain_client() {
     echo ""
     # Remove existing key files
     rm -rf "$ROOT_PATH/data"
+    rm -rf "$ROOT_PATH/genesis"
     rm -rf "$ROOT_PATH/node-details.json"
+    rm -rf "$ROOT_PATH/prefunded_keys.json"
     initialize_chain_client
     echo ""
 }
@@ -55,10 +103,24 @@ node_registration_request() {
     echo "-> Node Type: $node_type"
     local registration_url="http://127.0.0.1:$4"
     echo "-> Connecting Node URL: $registration_url"
-    local rpc_url="None"
+    local rpc_url="http://127.0.0.1:$BESU_PORT"
     echo "-> rpc URL: $rpc_url"
     local key_path="/$ROOT_PATH/data/key.pub"
     echo "-> Key Path: $key_path"
+    echo ""
+    if nc -z localhost "$FLASK_PORT"; then
+        echo "Flask is already running on port $FLASK_PORT."
+    else
+        echo "Flask is not running. Starting Flask..."
+        start_flask
+        sleep 5
+        if nc -z localhost "$FLASK_PORT"; then
+            echo "Flask started successfully."
+        else
+            echo "Failed to start Flask. Please check the Flask script."
+            exit 1
+        fi
+    fi
     echo ""
 
     if [ ! -f "$key_path" ]; then
@@ -182,6 +244,21 @@ if [ "$#" -lt 1 ]; then
 fi
 
 case "$1" in
+    start-flask)
+        start_flask
+        ;;
+    init-chain-client)
+        initialize_chain_client
+        ;;
+    start-chain-client)
+        start_blockchain
+        ;;
+    stop-chain-client)
+        stop_blockchain
+        ;;
+    restart-chain-client)
+        restart_blockchain
+        ;;
     reinit-chain-client)
         reinitialize_chain_client
         ;;
@@ -204,7 +281,12 @@ case "$1" in
         echo "Usage: $0 <operation> [args]"
         echo ""
         echo "Available operations:"
+        echo "  start-flask           Start the Flask API for node registration"
         echo "  init-chain-client     Initialize the chain client (generate keys, create genesis, extra data)"
+        echo "  start-chain-client    Start the chain client"
+        echo "  stop-chain-client     Stop the chain client"
+        echo "  restart-chain-client  Restart the chain client"
+        echo "  update-validators     Listen for validator updates"
         echo "  reinit-chain-client   Reinitialize the chain client and remove keys"
         echo "  register              Register this Node"
         echo "  read-data             Read data from this Node"
