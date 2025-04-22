@@ -17,8 +17,6 @@ class BlockchainInit:
         self.validator_addresses = os.path.join(self.genesis_files_path, "validator_address.json")
         self.genesis_file = os.path.join(self.genesis_files_path, "genesis.json")
 
-        
-    
     #---------------------Node Public and Private generation----------------------------
     def generate_keys(self):
         """Generates a new Ethereum account (private key and address)."""

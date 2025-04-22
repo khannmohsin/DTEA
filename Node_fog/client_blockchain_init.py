@@ -53,8 +53,6 @@ class BlockchainInit:
         with open(self.prefunded_account_file, "r") as f:
             data = json.load(f)
         addresses = [entry["address"] for entry in data["prefunded_accounts"]]
-        for addr in addresses:
-            print(f"Address: {addr}")  
 
         first_address = addresses[0]
 

@@ -18,7 +18,7 @@ class Node:
         self.rpc_URL =  rpc_url
         self.registration_url = registration_url  # Cloud Node API URL
         self.public_key = self.load_public_key(key_path)  # Load Public Key from file
-        self.node_url = node_url  # URL of the node
+        self.node_url = node_url  
         self.root_path = os.path.dirname(os.path.abspath(__file__))
         self.private_key =  os.path.join(self.root_path, "data/key.priv")
         self.address = self.get_address()  # Get the address of the node

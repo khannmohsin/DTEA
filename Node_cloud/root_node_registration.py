@@ -24,7 +24,7 @@ class NodeRegistry:
         self.besu_RPC_url = besu_RPC_url
 
         listener_thread = threading.Thread(target=self.listenForValidatorProposal)
-        listener_thread.daemon = True  # Daemonize thread
+        listener_thread.daemon = True 
         listener_thread.start()
         self.app = Flask(__name__)
         self.setup_routes()                
@@ -357,9 +357,11 @@ class NodeRegistry:
 
                         print(f"Sending acknowledgment to the {data['node_type']} with ID: {data['node_id']}")
                         print("All Validators:", get_All_validators)
-                        cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
-                        # response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
-                        cloud_ack_sender.send_acknowledgment(node_id)
+
+                        if data["node_type"] != "Sensor" or data["node_type"] != "Activator":
+                            cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
+                            # response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
+                            cloud_ack_sender.send_acknowledgment(node_id)
 
                         if self.checkValidator(data["signature"]):
                             print(f"{data['node_id']} is a validator.\n")
@@ -501,8 +503,9 @@ class NodeRegistry:
                             print(f"{node_id}:{node_name} is not allowed to read at {to_node_name}:{to_node_id}")
                             return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to read at {to_node_name}:{to_node_id}"}), 200
                     else:
-                        print("Invalid policy format.")
-                        return jsonify({"status": "error", "message": "Invalid policy format"}), 400
+                        print("Invalid policy.")
+                        print(policy_data)
+                        return jsonify({"status": "error", "message": f"{policy_data}"}), 400
 
             else:
                 print("Node is not registered on the blockchain. Go through the Registration process.")
@@ -601,8 +604,9 @@ class NodeRegistry:
                             print(f"{node_id}:{node_name} is not allowed to write at {to_node_name}:{to_node_id}")
                             return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to write at {to_node_name}:{to_node_id}"}), 200
                     else:
-                        print("Invalid policy format.")
-                        return jsonify({"status": "error", "message": "Invalid policy format"}), 400
+                        print("Invalid policy.")
+                        print(policy_data)
+                        return jsonify({"status": "error", "message": f"{policy_data}"}), 400
 
             else:
                 print("Node is not registered on the blockchain. Go through the Registration process.")
@@ -701,8 +705,9 @@ class NodeRegistry:
                             print(f"{node_id}:{node_name} is not allowed to execute at {to_node_name}:{to_node_id}")
                             return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to execute at {to_node_name}:{to_node_id}"}), 200
                     else:
-                        print("Invalid policy format.")
-                        return jsonify({"status": "error", "message": "Invalid policy format"}), 400
+                        print("Invalid policy.")
+                        print(policy_data)
+                        return jsonify({"status": "error", "message": f"{policy_data}"}), 400
 
             else:
                 print("Node is not registered on the blockchain. Go through the Registration process.")
@@ -732,7 +737,7 @@ class NodeRegistry:
                     return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
             else:
                 print("Deploy Smart Contract first")
-                return jsonify({"status": "error", "message": "Smart contract not deployed... \nWait for admin to deploy Smart Contract..."}), 500
+                return jsonify({"status": "error", "message": "Smart contract not deployed... Wait for admin to deploy Smart Contract..."}), 500
             result, status_code = self.is_node_registered_js(from_signature)
             if os.path.exists(self.node_details):
                 with open(self.node_details, "r") as json_file:
@@ -800,8 +805,9 @@ class NodeRegistry:
                             print(f"{node_id}:{node_name} is not allowed to transmit at {to_node_name}:{to_node_id}")
                             return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to transmit at {to_node_name}:{to_node_id}"}), 200
                     else:
-                        print("Invalid policy format.")
-                        return jsonify({"status": "error", "message": "Invalid policy format"}), 400
+                        print("Invalid policy.")
+                        print(policy_data)
+                        return jsonify({"status": "error", "message": f"{policy_data}"}), 400
 
             else:
                 print("Node is not registered on the blockchain. Go through the Registration process.")

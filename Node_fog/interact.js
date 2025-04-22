@@ -415,7 +415,7 @@ async function proposeValidatorVote(validatorAddress, add) {
             id: 1
         };
 
-        const response = await fetch(rpcURL, {
+        const response = await fetch(rpcURL_GLOBAL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -505,7 +505,7 @@ async function getPeerCount(rpcURL) {
     };
 
     try {
-        const response = await fetch(rpcURL, {
+        const response = await fetch(rpcURL_GLOBAL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -617,7 +617,7 @@ if (require.main === module) {
         }
 
         if (command === "getPeerCount") {
-            const peerCount = await getPeerCount(rpcURL);
+            const peerCount = await getPeerCount(rpcURL_GLOBAL);
         }
 
         if (command === "isNodeRegistered") {

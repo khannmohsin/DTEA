@@ -352,7 +352,6 @@ async function watchValidatorProposals() {
     }
 }
 
-
 async function proposeValidatorVote(validatorAddress, add) {
     try {
         const payload = {

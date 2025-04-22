@@ -3,26 +3,29 @@ import re
 
 class AcknowledgementSender:
 
-    def __init__(self, registering_node_url, genesis_file, node_registry_file, besu_rpc_url, prefunded_keys_file):
+    def __init__(self, registering_node_url, genesis_file, node_registry_file, besu_rpc_url, prefunded_keys_file, enode_file):
 
         self.registering_node_url = registering_node_url
         self.genesis_file = genesis_file
         self.node_registry_file = node_registry_file
         self.besu_rpc_url = besu_rpc_url
         self.prefunded_keys_file = prefunded_keys_file
+        self.enode_file = enode_file
 
     def get_enode(self):
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "admin_nodeInfo",
-            "params": [],
-            "id": 1
-        }
+        # payload = {
+        #     "jsonrpc": "2.0",
+        #     "method": "admin_nodeInfo",
+        #     "params": [],
+        #     "id": 1
+        # }
 
         try:
-            response = requests.post(self.besu_rpc_url, json=payload, headers={"Content-Type": "application/json"})
-            data = response.json()
-            enode_url = data.get("result", {}).get("enode", "")
+            with open(self.enode_file, "r") as file:
+                enode_url = file.read().strip()
+            # response = requests.post(self.besu_rpc_url, json=payload, headers={"Content-Type": "application/json"})
+            # data = response.json()
+            # enode_url = data.get("result", {}).get("enode", "")
 
             if enode_url:
                 
@@ -31,10 +34,13 @@ class AcknowledgementSender:
                     return enode_url  
             return None
 
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching enode: {e}")
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
             return None
-        
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            return None
+
 
     def send_acknowledgment(self, node_id):        
         enode_id = self.get_enode()
@@ -67,4 +73,7 @@ class AcknowledgementSender:
         finally:
             for file in files.values():
                 file.close()
+
+
+
 
