@@ -306,7 +306,7 @@ class NodeRegistry:
                     return jsonify({"status": "error", "message": "Older version of smart contract deployed. Update required by admin."}), 500
             else:
                 print("Deploy Smart Contract first")
-                return jsonify({"status": "error", "message": "Smart contract not deployed... \nWait for admin to deploy Smart Contract..."}), 500
+                return jsonify({"status": "error", "message": "Smart contract not deployed... Wait for admin to deploy Smart Contract..."}), 500
             
             data = request.json
             print("Node Details:")

@@ -185,7 +185,6 @@ class NodeRegistry:
                     signature = node_data.get("signature")
                     node_id = node_data.get("node_id")
                     node_name = node_data.get("node_name")
-
                 is_validator = self.checkValidator(signature)
 
                 if is_validator:
