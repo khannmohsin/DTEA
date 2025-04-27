@@ -1,19 +1,53 @@
 #!/bin/bash
 
+
+ROOT_PATH="$(pwd)"
+
+# Check if .env file exists
+if [ -f "$ROOT_PATH/.env" ]; then
+    echo ".env file found. Loading configuration from .env."
+
+    # Load .env variables into the shell and export
+    set -o allexport
+    source "$ROOT_PATH/.env"
+    set +o allexport
+
+else
+    echo ".env file not found. Enter network configuration..."
+
+    # Ask user for Network Configuration
+    read -p "Enter FLASK_PORT: " FLASK_PORT
+    read -p "Enter BESU_PORT: " BESU_PORT
+    read -p "Enter P2P_PORT: " P2P_PORT
+
+    # Create NODE_URL and BESU_RPC_URL dynamically
+    NODE_URL="http://127.0.0.1:$FLASK_PORT"
+    BESU_RPC_URL="http://127.0.0.1:$BESU_PORT"
+
+    # Save to a .env file
+    cat > "$ROOT_PATH/.env" <<EOL
+FLASK_PORT=$FLASK_PORT
+BESU_PORT=$BESU_PORT
+P2P_PORT=$P2P_PORT
+NODE_URL=$NODE_URL
+BESU_RPC_URL=$BESU_RPC_URL
+EOL
+
+    echo ".env file created successfully with the following contents:"
+    cat "$ROOT_PATH/.env"
+fi
+
+# # Network Configuration
+# FLASK_PORT=5001
+# BESU_PORT=8546
+# NODE_URL=http://127.0.0.1:$FLASK_PORT
+# BESU_RPC_URL=http://127.0.0.1:$BESU_PORT
+# P2P_PORT=30304
+
+
 # Set Python Virtual Environment and Paths
 PYTHON_V_ENV="/Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/.venv/bin/python"
-
-
-# Network Configuration
-FLASK_PORT=5002
-BESU_PORT=8547
-NODE_URL=http://127.0.0.1:$FLASK_PORT
-BESU_RPC_URL=http://127.0.0.1:$BESU_PORT
-P2P_PORT=30305
-
-
 # Define paths to Python scripts
-ROOT_PATH="$(pwd)"
 BLOCKCHAIN_SCRIPT="$ROOT_PATH/client_blockchain_init.py"
 FLASK_SCRIPT="$ROOT_PATH/client_node_registration.py"
 NODE_REGISTRATION_SCRIPT="$ROOT_PATH/client_node_reg_request.py"
@@ -71,19 +105,66 @@ restart_blockchain() {
     start_blockchain
 }
 
+
 reinitialize_chain_client() {
     echo "--------------------------------------"
     echo "Removing Previously Initialized Files"
     echo "--------------------------------------"
     echo ""
-    # Remove existing key files
+
+    # Remove existing files
     rm -rf "$ROOT_PATH/data"
     rm -rf "$ROOT_PATH/genesis"
     rm -rf "$ROOT_PATH/node-details.json"
     rm -rf "$ROOT_PATH/prefunded_keys.json"
+    rm -rf "$ROOT_PATH/.env"
+
+    echo ""
+    echo "--------------------------------------"
+    echo "Reconfiguring Network Ports After Reinitialization"
+    echo "--------------------------------------"
+    echo ""
+
+    # Re-ask network configuration and recreate .env
+    read -p "Enter FLASK_PORT: " FLASK_PORT
+    read -p "Enter BESU_PORT: " BESU_PORT
+    read -p "Enter P2P_PORT: " P2P_PORT
+
+    NODE_URL="http://127.0.0.1:$FLASK_PORT"
+    BESU_RPC_URL="http://127.0.0.1:$BESU_PORT"
+
+    cat > "$ROOT_PATH/.env" <<EOL
+FLASK_PORT=$FLASK_PORT
+BESU_PORT=$BESU_PORT
+P2P_PORT=$P2P_PORT
+NODE_URL=$NODE_URL
+BESU_RPC_URL=$BESU_RPC_URL
+EOL
+
+    echo ".env file recreated successfully with new configuration:"
+    cat "$ROOT_PATH/.env"
+
+    echo ""
+
+    # Now continue initializing blockchain
     initialize_chain_client
     echo ""
 }
+
+# reinitialize_chain_client() {
+#     echo "--------------------------------------"
+#     echo "Removing Previously Initialized Files"
+#     echo "--------------------------------------"
+#     echo ""
+#     # Remove existing key files
+#     rm -rf "$ROOT_PATH/data"
+#     rm -rf "$ROOT_PATH/genesis"
+#     rm -rf "$ROOT_PATH/node-details.json"
+#     rm -rf "$ROOT_PATH/prefunded_keys.json"
+#     rm -rf "$ROOT_PATH/.env"
+#     initialize_chain_client
+#     echo ""
+# }
 
 node_registration_request() {
     echo "----------------------------------"

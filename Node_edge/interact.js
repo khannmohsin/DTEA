@@ -1,11 +1,25 @@
-const { Web3 } = require("web3"); 
+const fs = require('fs');
 const path = require('path');
+
+// Explicitly resolve .env relative to this script
+const dotenvPath = path.resolve(__dirname, '.env');
+
+if (fs.existsSync(dotenvPath)) {
+    require('dotenv').config({ path: dotenvPath });
+} else {
+    console.error('.env file not found! Exiting.');
+    process.exit(1);
+}
+
+const { Web3 } = require("web3"); 
+// const path = require('path'); -------
 const rootPath = path.resolve(__dirname, '');
 const contractJson = require(path.join(rootPath, "data/NodeRegistry.json")); // Load ABI
-const fs = require('fs');
+// const fs = require('fs');  -------
 const { get } = require("http");
 const { send, emit } = require("process");
-const rpcURL_GLOBAL = "http://127.0.0.1:8547";
+const URL_rpc = process.env.BESU_RPC_URL;
+const rpcURL_GLOBAL = URL_rpc;
 const web3 = new Web3(rpcURL_GLOBAL)
 const fetch = require("node-fetch");
 const networkId = Object.keys(contractJson.networks)[0];
