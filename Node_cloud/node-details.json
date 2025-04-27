@@ -1,0 +1,10 @@
+{
+    "node_id": "CL-001",
+    "node_name": "Cloud_Node",
+    "node_type": "Cloud",
+    "public_key": "0xbc5d08408c942e9428c1ab4612c80c16365018f6d5a4a05b48c22286ed2f109311cfddfb758b8a511ef1b06d5fed796d1d8a4b21c7d276b3694a8bc9bc948f10",
+    "address": "0xd2ebe6950227ab5b1298b38d2fec3a291e3b8bb0",
+    "node_url": "http://127.0.0.1:5000",
+    "rpcURL": "http://127.0.0.1:8545",
+    "signature": "0x10fad32ca4a6dc8976e531ee5969b5b18c5569d8ab9d9c0656f95d14474538e179de58a71940284d93109f8ab4a11bd74d5a26f238c33da4a35f59610d98eca101"
+}
