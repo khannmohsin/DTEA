@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import csv 
 
 # Define performance categories (metrics)
 categories = ["Execution Speed", "Energy", "RAM", "ROM", "E-RANK"]
@@ -25,6 +26,23 @@ e_rank_norm = [val / max(e_rank) for val in e_rank]  # Higher E-RANK is better
 
 # Combine normalized data
 data = np.array([cpb_norm, energy_norm, ram_norm, rom_norm, e_rank_norm]).T
+
+print("Normalized Data for Each Hash Function:\n")
+for i, label in enumerate(hash_functions):
+    print(f"{label}:")
+    for category, value in zip(categories, data[i]):
+        print(f"  {category}: {value:.4f}")
+    print()
+
+csv_filename = "normalized_data.csv"
+with open(csv_filename, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    # Write header
+    writer.writerow(["Hash Function"] + categories)
+    # Write rows
+    for i, label in enumerate(hash_functions):
+        row = [label] + [f"{value:.4f}" for value in data[i]]
+        writer.writerow(row)
 
 # Generate angles for radar chart
 angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
@@ -86,4 +104,4 @@ ax.grid(True, linestyle='--', linewidth=1.2, alpha=0.7)
 
 # Display the chart
 plt.savefig("radar_chart.pdf", format="pdf", bbox_inches="tight")
-plt.show()
+# plt.show()
