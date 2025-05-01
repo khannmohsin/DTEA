@@ -358,7 +358,7 @@ class NodeRegistry:
                         print(f"Sending acknowledgment to the {data['node_type']} with ID: {data['node_id']}")
                         print("All Validators:", get_All_validators)
 
-                        if data["node_type"] != "Sensor" or data["node_type"] != "Activator":
+                        if data["node_type"] != "Sensor" and data["node_type"] != "Activator":
                             cloud_ack_sender = AcknowledgementSender(data["node_url"], self.genesis_file_path, self.node_registry_path, self.besu_RPC_url, self.prefunded_keys_file)
                             # response = jsonify({"status": "success...", "message": "Node registered successfully", "raw_output": raw_output})
                             cloud_ack_sender.send_acknowledgment(node_id)
@@ -428,7 +428,7 @@ class NodeRegistry:
                 if self.check_smart_contract_deployment():
                     print("Smart Contract correctly deployed.\n")
                     print("----------------------------------")
-                    print("Received Node Read Request")
+                    print("Received Data Read Request")
                     print("----------------------------------\n")
                 else:
                     print("Error with Smart Contract File. Redeploy or Check interact.js")
@@ -529,7 +529,7 @@ class NodeRegistry:
                 if self.check_smart_contract_deployment():
                     print("Smart Contract correctly deployed.\n")
                     print("----------------------------------")
-                    print("Received Node Write Request")
+                    print("Received Data Write Request")
                     print("----------------------------------\n")
                 else:
                     print("Error with Smart Contract File. Redeploy or Check interact.js")
@@ -613,8 +613,8 @@ class NodeRegistry:
                 return jsonify({"status": "error", "message": f"Node {node_id}:{node_name} is not registered.  Register the node first"}), 404
             
 
-        @self.app.route("/execute", methods=["POST"])
-        def execute():
+        @self.app.route("/update", methods=["PUT"])
+        def update():
             from_signature = request.args.get("signature")
             node_id = request.args.get("node_id")
             node_name = request.args.get("node_name")
@@ -630,7 +630,7 @@ class NodeRegistry:
                 if self.check_smart_contract_deployment():
                     print("Smart Contract correctly deployed.\n")
                     print("----------------------------------")
-                    print("Received Node Execute Request")
+                    print("Received Data Update Request")
                     print("----------------------------------\n")
                 else:
                     print("Error with Smart Contract File. Redeploy or Check interact.js")
@@ -698,12 +698,12 @@ class NodeRegistry:
                         print("Flow:", flow)
                         print("Permissions:", permissions)
 
-                        if "EXECUTE" in permissions:
-                            print(f"{node_id}:{node_name} is allowed to execute at {to_node_name}:{to_node_id} with flow {flow}: {permissions}")
-                            return jsonify({"status": "success", "message": f"Node {node_id}:{node_name} is allowed to execute at {to_node_name}:{to_node_id}"}), 200
+                        if "UPDATE" in permissions:
+                            print(f"{node_id}:{node_name} is allowed to update at {to_node_name}:{to_node_id} with flow {flow}: {permissions}")
+                            return jsonify({"status": "success", "message": f"Node {node_id}:{node_name} is allowed to update at {to_node_name}:{to_node_id}"}), 200
                         else:
-                            print(f"{node_id}:{node_name} is not allowed to execute at {to_node_name}:{to_node_id}")
-                            return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to execute at {to_node_name}:{to_node_id}"}), 200
+                            print(f"{node_id}:{node_name} is not allowed to update at {to_node_name}:{to_node_id}")
+                            return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to update at {to_node_name}:{to_node_id}"}), 200
                     else:
                         print("Invalid policy.")
                         print(policy_data)
@@ -713,8 +713,8 @@ class NodeRegistry:
                 print("Node is not registered on the blockchain. Go through the Registration process.")
                 return jsonify({"status": "error", "message": f"Node {node_id}:{node_name} is not registered.  Register the node first"}), 404        
            
-        @self.app.route("/transmit", methods=["POST"])
-        def transmit():
+        @self.app.route("/remove", methods=["DELETE"])
+        def remove():
             from_signature = request.args.get("signature")
             node_id = request.args.get("node_id")
             node_name = request.args.get("node_name")
@@ -730,7 +730,7 @@ class NodeRegistry:
                 if self.check_smart_contract_deployment():
                     print("Smart Contract correctly deployed.\n")
                     print("----------------------------------")
-                    print("Received Node Transmit Request")
+                    print("Received Data Remove Request")
                     print("----------------------------------\n")
                 else:
                     print("Error with Smart Contract File. Redeploy or Check interact.js")
@@ -798,12 +798,12 @@ class NodeRegistry:
                         print("Flow:", flow)
                         print("Permissions:", permissions)
 
-                        if "TRANSMIT" in permissions:
-                            print(f"{node_id}:{node_name} is allowed to transmit at {to_node_name}:{to_node_id} with flow {flow}: {permissions}")
-                            return jsonify({"status": "success", "message": f"Node {node_id}:{node_name} is allowed to transmit at {to_node_name}:{to_node_id}"}), 200
+                        if "REMOVE" in permissions:
+                            print(f"{node_id}:{node_name} is allowed to remove at {to_node_name}:{to_node_id} with flow {flow}: {permissions}")
+                            return jsonify({"status": "success", "message": f"Node {node_id}:{node_name} is allowed to remove at {to_node_name}:{to_node_id}"}), 200
                         else:
-                            print(f"{node_id}:{node_name} is not allowed to transmit at {to_node_name}:{to_node_id}")
-                            return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to transmit at {to_node_name}:{to_node_id}"}), 200
+                            print(f"{node_id}:{node_name} is not allowed to remove at {to_node_name}:{to_node_id}")
+                            return jsonify({"status": "failure", "message": f"Node {node_id}:{node_name} is not allowed to remove at {to_node_name}:{to_node_id}"}), 200
                     else:
                         print("Invalid policy.")
                         print(policy_data)

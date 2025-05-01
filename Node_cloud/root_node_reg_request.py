@@ -119,7 +119,7 @@ class Node:
             print("Raw response:", response.text)
             return None
         
-    def transmit_data(self):
+    def remove_data(self):
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
@@ -129,7 +129,7 @@ class Node:
             "signature": self.sign_identity()
         }
         """Transmit data to the Cloud Node."""
-        response = requests.post(f"{self.registration_url}/transmit", params=data)
+        response = requests.delete(f"{self.registration_url}/remove", params=data)
 
         try:
             if response.status_code == 200:
@@ -169,7 +169,7 @@ class Node:
             print("Raw response:", response.text)
             return None
         
-    def execute_command(self):
+    def update_data(self):
         data = {
             "node_id": self.node_id,
             "node_name": self.node_name,
@@ -179,7 +179,7 @@ class Node:
             "signature": self.sign_identity()
         }
         """Execute a command on the Cloud Node."""
-        response = requests.post(f"{self.registration_url}/execute", params=data)
+        response = requests.put(f"{self.registration_url}/update", params=data)
 
         try:
             if response.status_code == 200:
@@ -226,23 +226,23 @@ if __name__ == "__main__":
             node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
             node.write_data()
 
-        elif command == "transmit":
+        elif command == "remove":
             if len(sys.argv) != 7:
-                print("Usage: python root_node_reg_request.py transmit <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
+                print("Usage: python root_node_reg_request.py remove <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
             node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
-            node.transmit_data()
+            node.remove_data()
 
-        elif command == "execute":
+        elif command == "update":
             if len(sys.argv) != 7:
-                print("Usage: python root_node_reg_request.py execute <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
+                print("Usage: python root_node_reg_request.py update <node_id>, <node_name>, <node_type>, <registration_url>, <key_path>")
                 sys.exit(1)
 
             node_id, node_name, node_type, registration_url, key_path = sys.argv[2:]
             node = Node(node_id, node_name, node_type, registration_url, key_path, "", "")
-            node.execute_command()
+            node.update_data()
 
         else:
             print(f"Error: Unknown command '{command}'")

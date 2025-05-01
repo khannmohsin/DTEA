@@ -157,7 +157,7 @@ self_register(){
 
 node_read(){
     echo "--------------------------"
-    echo "Starting Node Read Request"
+    echo "Starting Data Read Request"
     echo "--------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
@@ -183,7 +183,7 @@ node_read(){
 
 node_write(){
     echo "---------------------------"
-    echo "Starting Node Write Request"
+    echo "Starting Data Write Request"
     echo "---------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
@@ -207,14 +207,14 @@ node_write(){
 }
 
 
-node_transmit(){
+node_remove(){
     echo "------------------------------"
-    echo "Starting Node Transmit Request"
+    echo "Starting Data Remove Request"
     echo "------------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_root_services.sh transamit-date <node_id> <node_name> <node_type> <connecting_port>"
+        echo "Usage: ./start_root_services.sh remove-data <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
     local node_id="$1"
@@ -229,18 +229,18 @@ node_transmit(){
     echo "Key Path: $key_path"
     echo ""
     echo "Transmitting data from the accessed node..."
-    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" remove "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
 
-node_execute(){
+node_update(){
     echo "-----------------------------"
-    echo "Starting Node Execute Request"
+    echo "Starting Data Update Request"
     echo "-----------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_root_services.sh execute-data <node_id> <node_name> <node_type> <connecting_port>"
+        echo "Usage: ./start_root_services.sh update-data <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
     local node_id="$1"
@@ -255,7 +255,7 @@ node_execute(){
     echo "-> Key Path: $key_path"
     echo ""
     echo "Executing data from the accessed node..."
-    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" update "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }
 
@@ -317,11 +317,11 @@ case "$1" in
     write-data)
         node_write "$2" "$3" "$4" "$5"
         ;;
-    transmit-data)
-        node_transmit "$2" "$3" "$4" "$5"
+    remove-data)
+        node_remove "$2" "$3" "$4" "$5"
         ;;
-    execute-data)
-        node_execute "$2" "$3" "$4" "$5"
+    update-data)
+        node_update "$2" "$3" "$4" "$5"
         ;;
     admin)
         smart_contract_deployment
