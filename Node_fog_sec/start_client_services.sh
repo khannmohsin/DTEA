@@ -214,7 +214,7 @@ node_registration_request() {
 
 node_read(){
     echo "--------------------------"
-    echo "Starting Node Read Request"
+    echo "Starting Data Read Request"
     echo "--------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
@@ -233,13 +233,12 @@ node_read(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "-> Key Path: $key_path"
     echo ""
-    echo "Reading data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" read "$node_id" "$node_name" "$node_type" "$read_url" "$key_path"
 }
 
 node_write(){
     echo "---------------------------"
-    echo "Starting Node Write Request"
+    echo "Starting Data Write Request"
     echo "---------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
@@ -258,19 +257,18 @@ node_write(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "-> Key Path: $key_path"
     echo ""
-    echo "Writing data from the accessed node..."
     $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" write "$node_id" "$node_name" "$node_type" "$write_url" "$key_path"
 }
 
 
-node_transmit(){
+node_remove(){
     echo "------------------------------"
-    echo "Starting Node Transmit Request"
+    echo "Starting Data Remove Request"
     echo "------------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_client_services.sh transmit-data <node_id> <node_name> <node_type> <connecting_port>"
+        echo "Usage: ./start_client_services.sh remove-data <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
     local node_id="$1"
@@ -284,18 +282,17 @@ node_transmit(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "Key Path: $key_path"
     echo ""
-    echo "Transmitting data from the accessed node..."
-    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" transmit "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" remove "$node_id" "$node_name" "$node_type" "$transmit_url" "$key_path"
 }
 
-node_execute(){
+node_update(){
     echo "-----------------------------"
-    echo "Starting Node Execute Request"
+    echo "Starting Data Update Request"
     echo "-----------------------------"
     echo ""
     if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
         echo "Error: Missing arguments for node registration."
-        echo "Usage: ./start_client_services.sh execute-data <node_id> <node_name> <node_type> <connecting_port>"
+        echo "Usage: ./start_client_services.sh update-data <node_id> <node_name> <node_type> <connecting_port>"
         exit 1
     fi
     local node_id="$1"
@@ -309,8 +306,7 @@ node_execute(){
     local key_path="$ROOT_PATH/data/key.pub"
     echo "-> Key Path: $key_path"
     echo ""
-    echo "Executing data from the accessed node..."
-    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" execute "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
+    $PYTHON_V_ENV "$NODE_REGISTRATION_SCRIPT" update "$node_id" "$node_name" "$node_type" "$execute_url" "$key_path"
 
 }
 
@@ -352,11 +348,11 @@ case "$1" in
     write-data)
         node_write "$2" "$3" "$4" "$5"
         ;;
-    transmit-data)
-        node_transmit "$2" "$3" "$4" "$5"
+    remove-data)
+        node_remove "$2" "$3" "$4" "$5"
         ;;
-    execute-data)
-        node_execute "$2" "$3" "$4" "$5"
+    update-data)
+        node_update "$2" "$3" "$4" "$5"
         ;;
     help)
         echo "Usage: $0 <operation> [args]"
@@ -372,8 +368,8 @@ case "$1" in
         echo "  register              Register this Node"
         echo "  read-data             Read data from this Node"
         echo "  write-data            Write data from this Node"
-        echo "  transmit-data         Transmit data from this Node"
-        echo "  execute-data          Execute data from this Node"
+        echo "  remove-data         Transmit data from this Node"
+        echo "  update-data          Execute data from this Node"
         echo "  help                  Show this help message"
         echo ""
         ;;
