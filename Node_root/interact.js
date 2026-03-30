@@ -12,6 +12,21 @@ const contractJson = require(path.join(rootPath, "data/NodeRegistry.json")); // 
 const rpcURL = process.env.BESU_RPC_URL || "http://127.0.0.1:8545";
 const web3 = new Web3(rpcURL);
 
+function findProjectRoot(startPath) {
+  let current = path.resolve(startPath);
+  while (true) {
+    if (fs.existsSync(path.join(current, ".git"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return path.resolve(startPath, "..");
+    current = parent;
+  }
+}
+
+const projectRoot = findProjectRoot(rootPath);
+const resultsDir = path.join(projectRoot, "results");
+fs.mkdirSync(resultsDir, { recursive: true });
+const gasLogPath = path.join(resultsDir, "gas_log.jsonl");
+
 // Resolve deployed address from Truffle-style artifact
 const networks = contractJson.networks || {};
 const networkId = Object.keys(networks)[0];
@@ -83,7 +98,22 @@ async function msigClearedEvents(fromBlock = 0) {
   })), null, 2));
 }
 
-async function sendTx(method, gas = 3_000_000, value = "0") {
+function appendJsonLine(filePath, payload) {
+  fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, "utf8");
+}
+
+function appendGasLog(functionName, receipt) {
+  if (!receipt || !functionName) return;
+  appendJsonLine(gasLogPath, {
+    function: functionName,
+    timestamp: new Date().toISOString(),
+    blockNumber: Number(receipt.blockNumber || 0),
+    gasUsed: Number(receipt.gasUsed || 0),
+    transactionHash: receipt.transactionHash || null,
+  });
+}
+
+async function sendTx(method, gas = 3_000_000, value = "0", gasLabel = null) {
   const data = method.encodeABI();
   const nonce = await web3.eth.getTransactionCount(account, "pending");
   const tx = {
@@ -96,7 +126,9 @@ async function sendTx(method, gas = 3_000_000, value = "0") {
     value
   };
   const signed = await web3.eth.accounts.signTransaction(tx, privateKey);
-  return web3.eth.sendSignedTransaction(signed.rawTransaction);
+  const receipt = await web3.eth.sendSignedTransaction(signed.rawTransaction);
+  if (gasLabel) appendGasLog(gasLabel, receipt);
+  return receipt;
 }
 
 function jsonReplacer(key, value) {
@@ -224,8 +256,12 @@ async function approveCreatePolicy(fromRoleName, toRoleName, opsCsvOrMask, ctxSc
   const toRole   = ROLE[toRoleName]   ?? Number(toRoleName);
   const ops      = parseOps(opsCsvOrMask);
   const schema   = toBytes32(ctxSchemaStrOrHex || ZERO32);
-  const rc = await sendTx(contract.methods.approveCreatePolicy(fromRole, toRole, ops, schema));
+  const rc = await sendTx(contract.methods.approveCreatePolicy(fromRole, toRole, ops, schema), 3_000_000, "0", "approvePolicy");
   console.log("✅ approveCreatePolicy:", rc.transactionHash);
+}
+
+async function approvePolicy(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaStrOrHex) {
+  await approveCreatePolicy(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaStrOrHex);
 }
 
 async function _findPolicyId(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaStr) {
@@ -252,6 +288,21 @@ async function _findPolicyId(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaSt
   return 0;                      // <--- RETURN (no console.log)
 }
 
+async function ensurePolicy(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaStrOrHex) {
+  const existingId = await _findPolicyId(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaStrOrHex || "");
+  if (Number(existingId || 0) > 0) {
+    console.log(`exists:${Number(existingId)}`);
+    return;
+  }
+
+  const fromRole = ROLE[fromRoleName] ?? Number(fromRoleName);
+  const toRole   = ROLE[toRoleName]   ?? Number(toRoleName);
+  const ops      = parseOps(opsCsvOrMask);
+  const schema   = toBytes32(ctxSchemaStrOrHex || ZERO32);
+  const rc = await sendTx(contract.methods.createPolicy(fromRole, toRole, ops, schema), 3_000_000, "0", "ensurePolicy");
+  console.log(`created:${rc.transactionHash}`);
+}
+
 
 // =========================================================
 /*                    NODES (PACKED)                       */
@@ -266,7 +317,7 @@ async function registerNode(nodeId, nodeName, nodeTypeStr, publicKey, registered
     ["string","string","string","string","address","string","string","string"],
     [ nodeId,  nodeName,  nodeTypeStr,  publicKey,  registeredByAddr,  rpcURL,  registeredByNodeTypeStr,  nodeSignature ]
   );
-  const rc = await sendTx(contract.methods.registerNodePacked(payload));
+  const rc = await sendTx(contract.methods.registerNodePacked(payload), 3_000_000, "0", "registerNode");
   console.log("✅ registerNodePacked:", rc.transactionHash);
 }
 
@@ -317,7 +368,7 @@ async function isValidator(nodeSignature) {
 async function issueGrant(fromNodeSig, toNodeSig, policyId, opsCsvOrMask, expiresAtTs) {
   const ops = parseOps(opsCsvOrMask);
   const exp = /^\d+$/.test(expiresAtTs) ? Number(expiresAtTs) : tsNowPlus(Number(expiresAtTs || 0));
-  const rc = await sendTx(contract.methods.issueGrant(fromNodeSig, toNodeSig, Number(policyId), ops, exp));
+  const rc = await sendTx(contract.methods.issueGrant(fromNodeSig, toNodeSig, Number(policyId), ops, exp), 3_000_000, "0", "issueToken");
   console.log("✅ issueGrant:", rc.transactionHash);
 }
 
@@ -327,14 +378,34 @@ async function issueGrantDelegable(fromNodeSig, toNodeSig, policyId, opsCsvOrMas
   const allow = (String(delegationAllowed).toLowerCase() === "true" || delegationAllowed === "1");
   const depth = Number(delegationDepth || 0);
   const rc = await sendTx(
-    contract.methods.issueGrantDelegable(fromNodeSig, toNodeSig, Number(policyId), ops, exp, allow, depth)
+    contract.methods.issueGrantDelegable(fromNodeSig, toNodeSig, Number(policyId), ops, exp, allow, depth),
+    3_000_000,
+    "0",
+    "issueTokenDelegable"
   );
   console.log("✅ issueGrantDelegable:", rc.transactionHash);
 }
 
 async function revokeGrant(fromNodeSig, toNodeSig, policyId) {
-  const rc = await sendTx(contract.methods.revokeGrant(fromNodeSig, toNodeSig, Number(policyId)));
+  const rc = await sendTx(contract.methods.revokeGrant(fromNodeSig, toNodeSig, Number(policyId)), 3_000_000, "0", "revokeToken");
   console.log("✅ revokeGrant:", rc.transactionHash);
+}
+
+async function issueToken(fromNodeSig, toNodeSig, policyId, opsCsvOrMask, expiresAtTs, maxDelegationDepth = 0) {
+  const depth = Number(maxDelegationDepth || 0);
+  if (depth > 0) {
+    await issueGrantDelegable(fromNodeSig, toNodeSig, policyId, opsCsvOrMask, expiresAtTs, true, depth);
+    return;
+  }
+  await issueGrant(fromNodeSig, toNodeSig, policyId, opsCsvOrMask, expiresAtTs);
+}
+
+async function issueTokenDelegable(fromNodeSig, toNodeSig, policyId, opsCsvOrMask, expiresAtTs, delegationAllowed = true, delegationDepth = 1) {
+  await issueGrantDelegable(fromNodeSig, toNodeSig, policyId, opsCsvOrMask, expiresAtTs, delegationAllowed, delegationDepth);
+}
+
+async function revokeToken(fromNodeSig, toNodeSig, policyId) {
+  await revokeGrant(fromNodeSig, toNodeSig, policyId);
 }
 
 async function findPolicyId(fromRoleName, toRoleName, opsCsvOrMask, ctxSchemaStr) {
@@ -372,14 +443,27 @@ async function getGrantEx(fromNodeSig, toNodeSig, policyId) {
     isRevoked: g[5],
     delegationAllowed: g[6],
     delegationDepth: Number(g[7]),
+    depthDel: Number(g[8] || g[7] || 0),
+    parentTokenId: g[9] || ZERO32,
   };
   console.log(JSON.stringify(grant, null, 2));
 }
 
 async function checkGrant(fromNodeSig, toNodeSig, policyId, opCsvOrMask) {
   const opBit = parseOps(opCsvOrMask);
+  // eth_call is read-only, so this path consumes zero gas and is intentionally not logged.
   const ok = await contract.methods.checkGrant(fromNodeSig, toNodeSig, Number(policyId), opBit).call();
   console.log(ok);
+}
+
+async function checkGrantAndLog(fromNodeSig, toNodeSig, policyId, opCsvOrMask) {
+  const opBit = parseOps(opCsvOrMask);
+  const rc = await sendTx(contract.methods.checkGrantAndLog(fromNodeSig, toNodeSig, Number(policyId), opBit));
+  console.log(JSON.stringify({
+    granted: !!rc?.events?.AccessGranted,
+    transactionHash: rc.transactionHash,
+    blockNumber: Number(rc.blockNumber || 0)
+  }, null, 2));
 }
 
 async function isGrantExpired(fromNodeSig, toNodeSig, policyId) {
@@ -504,6 +588,7 @@ Multisig:
   node interact.js msigInfo
   node interact.js msigIsApprover <addr>
   node interact.js approveCreatePolicy <fromRole> <toRole> <opsCsv|mask> [ctxSchemaStrOrHex]
+  node interact.js approvePolicy <fromRole> <toRole> <opsCsv|mask> [ctxSchemaStrOrHex]
 
 Nodes (packed register):
   node interact.js registerNode <nodeId> <nodeName> <nodeTypeStr> <publicKey> <registeredByAddr> <rpcURL> <registeredByNodeTypeStr> <nodeSignature>
@@ -516,11 +601,15 @@ Nodes (packed register):
 Grants:
   node interact.js issueGrant <fromSig> <toSig> <policyId> <opsCsv|mask> <expiresAtTs or +seconds>
   node interact.js issueGrantDelegable <fromSig> <toSig> <policyId> <opsCsv|mask> <expiresAtTs or +seconds> <delegationAllowed:true|false> <delegationDepth>
+  node interact.js issueToken <fromSig> <toSig> <policyId> <opsCsv|mask> <expiresAtTs or +seconds> [maxDelegationDepth]
+  node interact.js issueTokenDelegable <fromSig> <toSig> <policyId> <opsCsv|mask> <expiresAtTs or +seconds> [delegationAllowed:true|false] [delegationDepth]
   node interact.js delegateGrant <currentFromSig> <toSig> <newFromSig> <policyId> <opsCsv|mask> <expiresAtTs or +seconds>
   node interact.js revokeGrant <fromSig> <toSig> <policyId>
+  node interact.js revokeToken <fromSig> <toSig> <policyId>
   node interact.js getGrant <fromSig> <toSig> <policyId>
   node interact.js getGrantEx <fromSig> <toSig> <policyId>
   node interact.js checkGrant <fromSig> <toSig> <policyId> <opCsv|mask>
+  node interact.js checkGrantAndLog <fromSig> <toSig> <policyId> <opCsv|mask>
   node interact.js isGrantExpired <fromSig> <toSig> <policyId>
 
 Besu/Utils:
@@ -548,6 +637,7 @@ Besu/Utils:
       case "msigInfo":       await msigInfo(); break;
       case "msigIsApprover": await msigIsApprover(args[0]); break;
       case "approveCreatePolicy": await approveCreatePolicy(args[0], args[1], args[2], args[3]); break;
+      case "approvePolicy": await approvePolicy(args[0], args[1], args[2], args[3]); break;
 
       // Nodes (packed)
       case "registerNode":     await registerNode(...args); break;
@@ -560,13 +650,17 @@ Besu/Utils:
 
       // Grants
       case "issueGrant":     await issueGrant(args[0], args[1], args[2], args[3], args[4]); break;
+      case "issueToken":     await issueToken(args[0], args[1], args[2], args[3], args[4], args[5]); break;
       case "revokeGrant":    await revokeGrant(args[0], args[1], args[2]); break;                 // from, to, policyId
+      case "revokeToken":    await revokeToken(args[0], args[1], args[2]); break;
       case "getGrant":       await getGrant(args[0], args[1], args[2]); break;                   // from, to, policyId
       case "getGrantEx":     await getGrantEx(args[0], args[1], args[2]); break;                 // from, to, policyId
       case "checkGrant":     await checkGrant(args[0], args[1], args[2], args[3]); break;        // from, to, policyId, op
+      case "checkGrantAndLog": await checkGrantAndLog(args[0], args[1], args[2], args[3]); break;
       case "isGrantExpired": await isGrantExpired(args[0], args[1], args[2]); break;             // from, to, policyId
       case "delegateGrant":  await delegateGrant(args[0], args[1], args[2], args[3], args[4], args[5]); break; // currFrom, to, newFrom, policyId, ops, exp
       case "issueGrantDelegable": await issueGrantDelegable(args[0], args[1], args[2], args[3], args[4], args[5], args[6]); break;
+      case "issueTokenDelegable": await issueTokenDelegable(args[0], args[1], args[2], args[3], args[4], args[5], args[6]); break;
 
       case "findPolicyId": {const id = await _findPolicyId(args[0], args[1], args[2], args[3]); console.log(Number(id || 0)); break;}
       case "msigApprovedEvents": await msigApprovedEvents(args[0]); break;
@@ -598,12 +692,12 @@ module.exports = {
   // Admin/Policy
   policyAdmin, setPolicyAdmin, createPolicy, updatePolicy, deprecatePolicy, getPolicy,
   // Multisig
-  msigMode, msigAdd, msigRemove, msigThreshold, msigInfo, msigIsApprover, approveCreatePolicy,
+  msigMode, msigAdd, msigRemove, msigThreshold, msigInfo, msigIsApprover, approveCreatePolicy, approvePolicy,
   // Nodes
   registerNode, isNodeRegistered, getNodeDetailsBySignature, getNodeDetailsByAddress,
   proposeValidator, isValidator, proposeValidatorVote,
   // Grants
-  issueGrant, issueGrantDelegable, delegateGrant, revokeGrant, getGrant, getGrantEx, checkGrant, isGrantExpired, 
+  issueGrant, issueGrantDelegable, issueToken, issueTokenDelegable, delegateGrant, revokeGrant, revokeToken, getGrant, getGrantEx, checkGrant, checkGrantAndLog, isGrantExpired, ensurePolicy,
   // Utils
   qbft_getValidatorsByBlockNumber, net_peerCount, checkIfDeployed, nextPolicyId, whoami, listenForValidatorProposals
 };

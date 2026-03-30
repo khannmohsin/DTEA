@@ -1,0 +1,16 @@
+{
+  "BlendCAC": {
+    "register": null,
+    "issue": null,
+    "revoke": null,
+    "delegate": null,
+    "check": null
+  },
+  "ACS-IoT": {
+    "register": null,
+    "issue": null,
+    "revoke": null,
+    "delegate": null,
+    "check": null
+  }
+}

@@ -1,0 +1,313 @@
+import json
+from eth_account import Account
+import subprocess
+import os
+import sys
+from monitor import track_performance
+from eth_keys import keys
+import inspect
+
+class BlockchainInit:
+    def __init__(self):
+        self.root_path = os.path.dirname(os.path.abspath(__file__))
+        self.prefunded_account_file = os.path.join(self.root_path, "prefunded_keys.json")
+        self.config_file = os.path.join(self.root_path, "qbftConfigFile.json")
+        self.data_path = os.path.join(self.root_path, "data/")
+        self.genesis_files_path = os.path.join(self.root_path, "genesis/")
+        self.private_key = os.path.join(self.data_path, "key.priv")
+        self.public_key = os.path.join(self.data_path, "key.pub")
+        self.validator_addresses = os.path.join(self.genesis_files_path, "validator_address.json")
+        self.genesis_file = os.path.join(self.genesis_files_path, "genesis.json")
+        # start_metrics_server()  # Start the Prometheus metrics server
+
+    #---------------------Node Public and Private generation----------------------------
+
+    @track_performance
+    def generate_keys(self):
+        """Generates a new Ethereum account (private key and address)."""
+        account = Account.create()
+        os.makedirs(self.data_path, exist_ok=True)
+
+        with open(self.private_key, "w") as priv_file:
+            private_key_bytes = os.urandom(32)
+            priv_key = keys.PrivateKey(private_key_bytes)
+            priv_file.write(priv_key.to_hex())
+
+        with open(self.public_key, "w") as pub_file:
+            public_key = priv_key.public_key
+            pub_file.write(public_key.to_hex())
+
+    #---------------------Create etherium accounts with ETH balance----------------------------
+    @track_performance
+    def generate_account(self):
+        """Generates a new Ethereum account (private key and address)."""
+        account = Account.create()
+        return {
+            "private_key": account._private_key.hex(),  # Store as hex
+            "address": account.address
+        }
+
+    #---------------------Create QBFT config file----------------------------
+    @track_performance
+    def create_qbft_file(self, num_prefunded_accounts, num_validators):
+        num_prefunded_accounts = int(num_prefunded_accounts)  # Ensure it's an integer
+        num_validators = int(num_validators) 
+        
+        CHAIN_ID = 1337
+        BLOCK_PERIOD_SECONDS = 5
+        EPOCH_LENGTH = 30000
+        REQUEST_TIMEOUT_SECONDS = 4
+
+        # GAS_LIMIT = "0x47b760"
+        GAS_LIMIT = "0x1C9C380"  # 30,000,000 in hex
+        # GAS_LIMIT = "0x1fffffffffffff"
+        DIFFICULTY = "0x1"
+
+        prefunded_accounts = [self.generate_account() for _ in range(num_prefunded_accounts)]
+
+        qbft_config = {
+            "genesis": {
+                "config": {
+                    "chainId": CHAIN_ID,
+                    "berlinBlock": 0,
+                    "qbft": {
+                        "blockperiodseconds": BLOCK_PERIOD_SECONDS,
+                        "epochlength": EPOCH_LENGTH,
+                        "requesttimeoutseconds": REQUEST_TIMEOUT_SECONDS
+                    },
+                    "zeroBaseFee": True
+                },
+                "nonce": "0x0",
+                "timestamp": "0x58ee40ba",
+                "gasLimit": GAS_LIMIT,
+                "difficulty": DIFFICULTY,
+                # "mixHash": "0x63746963616c2062797a616e74696e6365206674756c7420746f6c6572616e6365",
+                "coinbase": "0x0000000000000000000000000000000000000000",
+                "alloc": {acct["address"]: {"balance": "90000000000000000000000"} for acct in prefunded_accounts}
+            },
+            "blockchain": {
+                "nodes": {
+                    "generate": False,  # We generated validators manually
+                    "count": num_validators
+                }
+            }
+        }
+
+        with open(self.config_file, "w") as f:
+            json.dump(qbft_config, f, indent=4)
+
+        # Save generated keys for later use
+        with open(self.prefunded_account_file, "w") as f:
+            json.dump({
+                "prefunded_accounts": prefunded_accounts
+            }, f, indent=4)
+
+        print(f"\n QBFT Configuration file generated successfully at location: `{self.config_file}` \n")
+        print(f"\n Prefunded account keys saved in:  `{self.prefunded_account_file}`\n")
+
+    #---------------------Create genesis file from the QBFT config file----------------------------
+    @track_performance
+    def create_genesis_file(self, qbft_config_path):
+
+        # Run Besu command to generate blockchain config
+        subprocess.run([
+            "besu", "operator", "generate-blockchain-config",
+            "--config-file=" + qbft_config_path,
+            "--to=" + self.genesis_files_path
+        ], check=False)
+
+        print(f"\nGenesis file generated successfully at loc: {self.genesis_files_path}\n")
+
+    #---------------------Update the genesis file with updated extradata----------------------------
+    @track_performance
+    def update_genesis_file(self):
+        """Extract Ethereum address from private key using Besu CLI and store in JSON."""
+        
+        # Run Besu command to extract Ethereum address from private key
+        result = subprocess.run(
+            ["besu", "public-key", "export-address", "--node-private-key-file=" + self.private_key],
+            capture_output=True, text=True, check=False
+        )
+
+        # If the command was successful, extract the last line and remove "0x"
+        if result.returncode == 0:
+            last_line = result.stdout.strip().split("\n")[-1]  # Get last line
+            cleaned_address = last_line[2:] if last_line.startswith("0x") else last_line  # Remove "0x" prefix
+            
+            print(f"Extracted Node Address: {cleaned_address}\n")
+
+            # Load existing addresses from JSON file if it exists
+            if os.path.exists(self.validator_addresses):
+                with open(self.validator_addresses, "r") as file:
+                    try:
+                        addresses = json.load(file)  # Read existing list
+                        if not isinstance(addresses, list):
+                            addresses = []
+                    except json.JSONDecodeError:
+                        addresses = []
+            else:
+                addresses = []
+                
+            if cleaned_address not in addresses:
+                addresses.append(cleaned_address)
+
+                # Save updated address list to JSON file
+                with open(self.validator_addresses, "w") as file:
+                    json.dump(addresses, file, indent=4)
+                print(f"Node address saved in `{self.validator_addresses}` as JSON\n")
+            else:
+                print("Address already exists in JSON file. Skipping update.\n")
+
+            return cleaned_address
+        else:
+            print(f"Error extracting node address: {result.stderr}")
+            return None
+        
+    #---------------------Extra data generation----------------------------
+    @track_performance
+    def update_extra_data_in_genesis(self):
+            """Encodes validators into RLP and updates extraData in genesis.json."""
+
+            extra_data_file = os.path.join(self.genesis_files_path, "extraData.rlp")
+            
+            # Check if validators.json exists
+            if not os.path.exists(self.validator_addresses):
+                print(f"Error: Validators file `{self.validator_addresses }` not found. Run `update_genesis_file` first.")
+                return
+            
+            # Run Besu command to encode extraData
+            encode_result = subprocess.run(
+                ["besu", "rlp", "encode", "--from=" + self.validator_addresses, "--to=" + extra_data_file, "--type=QBFT_EXTRA_DATA"],
+                capture_output=True, text=True, check=False
+            )
+
+            if encode_result.returncode == 0:
+                print(f"Encoded extraData saved in `{extra_data_file}`\n")
+            else:
+                print(f"Error encoding extraData: {encode_result.stderr}\n")
+                return
+
+            with open(extra_data_file, "r") as file:
+                extra_data_rlp = file.read().strip()
+
+            with open(self.genesis_file, "r") as file:
+                genesis_data = json.load(file)
+
+            genesis_data["extraData"] = extra_data_rlp
+
+            with open(self.genesis_file, "w") as file:
+                json.dump(genesis_data, file, indent=4)
+
+            print(f"`extraData` updated in `{self.genesis_file}`\n")
+
+
+    #---------------------Get the node address besides pub and private key----------------------------
+    @track_performance
+    def get_validator_address(self):
+        """Extract Ethereum address from private key using Besu CLI."""
+        node_address_file = os.path.join(self.data_path, "node_address.txt") 
+        
+        result = subprocess.run(
+            ["besu", "public-key", "export-address", "--node-private-key-file=" + self.private_key],
+            capture_output=True,  
+            text=True, 
+            check=False  
+        )
+
+        if result.returncode == 0:
+            last_line = result.stdout.strip().split("\n")[-1]  # Get last line
+            last_line = last_line[2:] if last_line.startswith("0x") else last_line  # Remove "0x" if present
+
+            print(f"Extracted Node Address (without 0x): {last_line}")
+
+            with open(node_address_file, "w") as file:
+                file.write(last_line + "\n")
+
+            print(f"Node address saved in `{node_address_file}`")
+            return last_line
+        else:
+            print(f"Error extracting node address: {result.stderr}")
+
+    #---------------------Start the blockchain node----------------------------
+    @track_performance
+    def start_blockchain_node(self, ip_address):
+        """Starts the Besu node using subprocess.Popen()"""
+        rpc_http_port = os.getenv("ROOT_BESU_RPC_PORT", "8545")
+        p2p_port = os.getenv("ROOT_BESU_P2P_PORT", "30303")
+        metrics_port = os.getenv("ROOT_BESU_METRICS_PORT", "9545")
+
+        with open(self.prefunded_account_file, "r") as f:
+            data = json.load(f)
+        addresses = [entry["address"] for entry in data["prefunded_accounts"]]
+
+        first_address = addresses[0]
+
+        try:
+            print("Starting Besu node...")
+
+            process = subprocess.Popen(
+                ["besu",
+                "--data-path=" + self.data_path,
+                "--node-private-key-file=" + self.private_key,
+                "--genesis-file=" + self.genesis_file,
+                "--network-id=1337",
+                "--rpc-http-enabled",
+                "--rpc-http-host=0.0.0.0", 
+                "--rpc-http-api=ETH,NET,QBFT,ADMIN,WEB3,TXPOOL,MINER",
+                "--host-allowlist=*",
+                "--min-gas-price=0",
+                "--rpc-http-cors-origins=all",
+                "--rpc-http-port=" + str(rpc_http_port),
+                "--p2p-host=" + str(ip_address),
+                "--p2p-port=" + str(p2p_port),
+                # ✅ Metrics config
+                "--metrics-enabled",
+                "--metrics-host=0.0.0.0",
+                "--metrics-port=" + str(metrics_port),
+                "--metrics-category=BLOCKCHAIN,JVM,NETWORK,RPC,TRANSACTION_POOL,PEERS,SYNCHRONIZER,ETHEREUM,PERMISSIONING,PROCESS"
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            for line in process.stdout:
+                print("[Besu Output]:", line.strip())
+
+            for line in process.stderr:
+                print("[Besu Error]:", line.strip())
+
+            process.wait()  
+
+        except FileNotFoundError:
+            print("Error: Besu is not installed or not found in PATH.")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+
+if __name__ == "__main__":
+
+    blockchain_init = BlockchainInit()
+    
+    if len(sys.argv) > 1:
+        method_name = sys.argv[1]
+        method_args = sys.argv[2:] 
+
+        if hasattr(blockchain_init, method_name):
+            method = getattr(blockchain_init, method_name)
+
+            if callable(method):
+                # arg_count = method.__code__.co_argcount - 1  # Subtract 1 for `self`
+                arg_count = len(inspect.signature(method).parameters)
+                
+                if len(method_args) == arg_count:
+                    method(*method_args)
+                elif arg_count == 0:
+                    method()
+                else:
+                    print(f"Error: Function '{method_name}' requires {arg_count} argument(s), but {len(method_args)} were given.")
+            else:
+                print(f"Error: '{method_name}' is not callable.")
+        else:
+            print(f"Error: Function '{method_name}' not found in BlockchainInit.")
+    else:
+        print("Usage: python blockchain_init.py <function_name> [arguments...]")

@@ -68,6 +68,18 @@ def make_router(state):
 
         # ---- Policies ----
         if cmd == "createPolicy":
+            from_role_name, to_role_name, ops_csv, ctx_schema = args
+            policy_id = state["nextPolicyId"]
+            role_to_num = {"Unknown": 0, "Cloud": 1, "Fog": 2, "Edge": 3, "Sensor": 4, "Actuator": 5}
+            state["policies"][policy_id] = {
+                "fromRole": role_to_num.get(from_role_name, 0),
+                "toRole": role_to_num.get(to_role_name, 0),
+                "opsAllowed": OP.get(ops_csv, 0),
+                "isDeprecated": False,
+                "ctxSchema": orch_mod._ctx_hash(ctx_schema),
+                "policyHash": "0x" + "11" * 32,
+                "version": 1,
+            }
             state["nextPolicyId"] += 1
             return FakeCompleted("✅ createPolicy: 0xdead\n")
 
@@ -342,6 +354,7 @@ def test_registration_validator_included(orch, state):
         "address": "0x3333333333333333333333333333333333333333",
         "rpcURL": "http://x",
         "signature": "sig-fog-1",
+        "wants_validator": True,
     }
     state["last_address"] = payload["address"]
     out = orch.registration_flow(payload)
@@ -352,6 +365,23 @@ def test_registration_validator_included(orch, state):
         assert payload["address"].lower() in vlist
     else:
         assert payload["address"].lower() in state["validators"]
+
+
+def test_registration_fog_without_validator_request_stays_registered(orch, state):
+    payload = {
+        "node_id": "FG-2",
+        "node_name": "Fog-2",
+        "node_type": "Fog",
+        "public_key": "0xabc",
+        "address": "0x4444444444444444444444444444444444444444",
+        "rpcURL": "http://x",
+        "signature": "sig-fog-2",
+        "wants_validator": False,
+    }
+    state["last_address"] = payload["address"]
+    out = orch.registration_flow(payload)
+    assert out["ok"] is True
+    assert out["status"] == "registered"
 
 # ---------------------------
 # Tests: Access flow

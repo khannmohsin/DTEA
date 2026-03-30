@@ -1,0 +1,13 @@
+node_modules/
+results/
+runtime/generated/
+runtime/*/data_stale_*/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+.venv-py314-failed/
+
+*.log

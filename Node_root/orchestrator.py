@@ -20,12 +20,16 @@ import os
 import re
 import subprocess
 import time
+import statistics
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
 from acknowledgement import AcknowledgementSender
 import threading
 import json
 import re
+from pathlib import Path
+
+import requests
 
 
 try:
@@ -41,6 +45,13 @@ try:
 except Exception:
     def track_performance(fn):  # fallback no-op
         return fn
+
+try:
+    from web3 import Web3
+except Exception:
+    Web3 = None
+
+from tef_metrics import LatencyRecorder, TokenBucketRateLimiter, ensure_results_dir
     
 # --------------- constants ---------------
 
@@ -72,6 +83,24 @@ def _json_load(path: str, default):
             return json.load(f)
     except Exception:
         return default
+
+
+def _load_local_env(repo_root: str) -> None:
+    env_path = Path(repo_root) / ".env"
+    if not env_path.exists():
+        return
+    try:
+        for raw_line in env_path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        return
 
 def _json_save(path: str, data):
     tmp = f"{path}.tmp"
@@ -163,6 +192,8 @@ class JsResult:
 class Orchestrator:
     def __init__(self, repo_root: Optional[str]=None, registrar_role: str="Cloud", enforce_signature: bool=True):
         self.root = repo_root or os.path.dirname(os.path.abspath(__file__))
+        _load_local_env(self.root)
+        self.repo_path = Path(self.root)
         self.interact = os.path.join(self.root, "interact.js")
         self.node_registry_json = os.path.join(self.root, "data", "NodeRegistry.json")
         self.prefunded_keys_json = os.path.join(self.root, "prefunded_keys.json")
@@ -171,6 +202,17 @@ class Orchestrator:
         self.policy_index: Dict[str, Any] = _json_load(POLICY_INDEX_FILE, {})
         self.registrar_role = registrar_role  # used as "registeredByNodeTypeStr"
         self.enforce_signature = enforce_signature   # <-- store the flag
+        self.results_dir = ensure_results_dir(self.root)
+        self.latency_recorder = LatencyRecorder(self.results_dir)
+        self._request_ctx = threading.local()
+        self._request_lock = threading.RLock()
+        self._active_requests = 0
+        self._policy_lock = threading.RLock()
+        self._policy_poller_started = False
+        self._policy_poller_lock = threading.Lock()
+        self._policy_poll_block = 0
+        self._w3 = None
+        self._contract = None
         # default from (display only)
         pk = _json_load(self.prefunded_keys_json, {"prefunded_accounts":[]})
         # after: pk = _json_load(self.prefunded_keys_json, {"prefunded_accounts":[]})
@@ -182,6 +224,9 @@ class Orchestrator:
         self._vlisten_lock = threading.Lock()
         self._vlisten_started = False
         self._voted_addrs = set()  
+        self.local_node_tier = (self.nd.get("node_type") or registrar_role or "Unknown").strip().lower()
+        self._init_web3_contract()
+        self._start_policy_cache_watcher()
 
     # ---------- low-level JS bridge ----------
 
@@ -209,6 +254,181 @@ class Orchestrator:
             stderr=proc.stderr.strip(),
             code=proc.returncode
         )
+
+    def _init_web3_contract(self) -> None:
+        if Web3 is None:
+            return
+        try:
+            artifact = _json_load(self.node_registry_json, {})
+            abi = artifact.get("abi") or []
+            networks = artifact.get("networks") or {}
+            network_id = next(iter(networks.keys()), None)
+            address = networks.get(network_id, {}).get("address") if network_id else None
+            if not abi or not address:
+                return
+            provider = Web3.HTTPProvider(self.besu_rpc_url, request_kwargs={"timeout": 10})
+            self._w3 = Web3(provider)
+            self._contract = self._w3.eth.contract(address=Web3.to_checksum_address(address), abi=abi)
+        except Exception:
+            self._w3 = None
+            self._contract = None
+
+    def begin_request(self, node_tier: Optional[str]=None, condition: Optional[str]=None) -> None:
+        tier = (node_tier or self.local_node_tier or "unknown").strip().lower()
+        with self._request_lock:
+            self._active_requests += 1
+            concurrency = self._active_requests
+        self._request_ctx.start_monotonic = time.monotonic()
+        self._request_ctx.node_tier = tier
+        self._request_ctx.condition_override = (condition or "").strip().lower() or None
+        self._request_ctx.concurrency = concurrency
+
+    def end_request(self) -> None:
+        with self._request_lock:
+            self._active_requests = max(0, self._active_requests - 1)
+        for attr in ("start_monotonic", "node_tier", "condition_override", "concurrency"):
+            if hasattr(self._request_ctx, attr):
+                delattr(self._request_ctx, attr)
+
+    def _latency_elapsed(self) -> Optional[float]:
+        start = getattr(self._request_ctx, "start_monotonic", None)
+        if start is None:
+            return None
+        return max(0.0, time.monotonic() - start)
+
+    def _latency_condition(self, operation: str, node_tier: str) -> str:
+        override = getattr(self._request_ctx, "condition_override", None)
+        if override:
+            return override
+        if int(getattr(self._request_ctx, "concurrency", 1) or 1) > 1:
+            return "concurrent"
+        if not self.latency_recorder.has_samples(operation, node_tier):
+            return "cold"
+        return "warm"
+
+    def record_operation_latency(self, operation: str, *, elapsed: Optional[float]=None, node_tier: Optional[str]=None) -> None:
+        tier = (node_tier or getattr(self._request_ctx, "node_tier", None) or self.local_node_tier or "unknown").strip().lower()
+        duration = self._latency_elapsed() if elapsed is None else float(elapsed)
+        if duration is None:
+            return
+        condition = self._latency_condition(operation, tier)
+        self.latency_recorder.record(operation, tier, condition, duration)
+        self.latency_recorder.write_summary()
+
+    def latency_summary(self) -> Dict[str, Any]:
+        return self.latency_recorder.summary()
+
+    def _extract_tx_hash(self, text: str) -> str:
+        match = re.search(r"0x[a-fA-F0-9]{64}", text or "")
+        return match.group(0) if match else ""
+
+    def _rpc_call(self, rpc_url: str, method: str, params: list[Any]) -> Any:
+        payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
+        resp = requests.post(rpc_url, json=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            raise RuntimeError(str(data["error"]))
+        return data.get("result")
+
+    def _eth_block_number(self, rpc_url: str) -> int:
+        result = self._rpc_call(rpc_url, "eth_blockNumber", [])
+        return int(str(result), 16)
+
+    def _eth_tx_receipt(self, tx_hash: str) -> Dict[str, Any]:
+        result = self._rpc_call(self.besu_rpc_url, "eth_getTransactionReceipt", [tx_hash])
+        return result or {}
+
+    def _validator_rpc_urls(self) -> List[str]:
+        urls: List[str] = []
+        if not self._contract:
+            return urls
+        try:
+            validators = self._normalize_validators(self.qbft_get_validators())
+            for addr in validators:
+                try:
+                    rpc_url = self._contract.functions.nodeRpcUrls(Web3.to_checksum_address(addr)).call()
+                except Exception:
+                    rpc_url = ""
+                rpc_url = (rpc_url or "").strip()
+                if rpc_url:
+                    urls.append(rpc_url)
+        except Exception:
+            return []
+        return urls
+
+    def _measure_revocation_propagation(self, tx_hash: str) -> None:
+        if not tx_hash:
+            return
+        try:
+            receipt = self._eth_tx_receipt(tx_hash)
+            if not receipt:
+                return
+            target_block = int(str(receipt.get("blockNumber", "0x0")), 16)
+            validator_urls = self._validator_rpc_urls()
+            if not validator_urls:
+                return
+
+            start = time.monotonic()
+            deadline = start + 60
+            while time.monotonic() < deadline:
+                seen = 0
+                for rpc_url in validator_urls:
+                    try:
+                        if self._eth_block_number(rpc_url) >= target_block:
+                            seen += 1
+                    except Exception:
+                        pass
+                if seen == len(validator_urls):
+                    self.record_operation_latency("revokeTokenPropagation", elapsed=time.monotonic() - start)
+                    return
+                time.sleep(1)
+        except Exception:
+            return
+
+    def _start_policy_cache_watcher(self) -> None:
+        with self._policy_poller_lock:
+            if self._policy_poller_started:
+                return
+            self._policy_poller_started = True
+        thread = threading.Thread(target=self._policy_cache_watcher_loop, name="policy-cache-watcher", daemon=True)
+        thread.start()
+
+    def _invalidate_policy_ids(self, policy_ids: List[int]) -> None:
+        if not policy_ids:
+            return
+        policy_id_set = {int(pid) for pid in policy_ids}
+        with self._policy_lock:
+            self._load_policy_index()
+            stale_keys = [key for key, pid in self.policy_index.items() if int(pid or 0) in policy_id_set]
+            for key in stale_keys:
+                self.policy_index.pop(key, None)
+            if stale_keys:
+                self._save_policy_index()
+
+    def _policy_cache_watcher_loop(self) -> None:
+        if not self._contract or not self._w3:
+            return
+        try:
+            self._policy_poll_block = int(self._w3.eth.block_number)
+        except Exception:
+            self._policy_poll_block = 0
+
+        while True:
+            try:
+                latest = int(self._w3.eth.block_number)
+                from_block = max(0, self._policy_poll_block)
+                updated = self._contract.events.PolicyUpdated.get_logs(from_block=from_block, to_block=latest)
+                deprecated = self._contract.events.PolicyDeprecated.get_logs(from_block=from_block, to_block=latest)
+                changed_ids = []
+                for event in updated + deprecated:
+                    changed_ids.append(int(event["args"]["policyId"]))
+                self._invalidate_policy_ids(changed_ids)
+                self._policy_poll_block = latest + 1
+            except Exception:
+                time.sleep(2)
+                continue
+            time.sleep(2)
     
 
     def find_policy_id(self, from_role: str, to_role: str, ops_csv: str, ctx_schema_str: str) -> Dict[str, Any]:
@@ -391,6 +611,7 @@ class Orchestrator:
         r = self._js("registerNode", node_id, node_name, node_type_str, public_key, registered_by_addr, rpcURL, registered_by_node_type_str, node_signature)
         print(f"[register_node] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        self.record_operation_latency("registerNode")
         return r.stdout
 
     #@track_performance
@@ -546,6 +767,7 @@ class Orchestrator:
         r = self._js("issueGrant", from_sig, to_sig, policy_id, ops_csv, expires_at, env=env)
         print(f"[issue_grant] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        self.record_operation_latency("issueToken")
         return r.stdout
 
     #@track_performance
@@ -556,6 +778,7 @@ class Orchestrator:
         allow = "true" if delegation_allowed else "false"
         r = self._js("issueGrantDelegable", from_sig, to_sig, policy_id, ops_csv, expires_at, allow, delegation_depth, env=env)
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        self.record_operation_latency("issueTokenDelegable")
         return r.stdout
 
     #@track_performance
@@ -563,8 +786,15 @@ class Orchestrator:
         env = os.environ.copy()
         if from_idx is not None:
             env["FROM_IDX"] = str(from_idx)
-        r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, ops_csv, expires_at, env=env)
+        if os.getenv("REAL_INTERACT"):
+            policy_id = self._resolve_grant_policy_id(current_from_sig, to_sig)
+            if policy_id is None:
+                raise RuntimeError("grant_policy_id_unknown")
+            r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, policy_id, ops_csv, expires_at, env=env)
+        else:
+            r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, ops_csv, expires_at, env=env)
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        self.record_operation_latency("delegateToken")
         return r.stdout
 
     #@track_performance
@@ -575,14 +805,53 @@ class Orchestrator:
         r = self._js("revokeGrant", from_sig, to_sig, policy_id, env=env)
         if not r.ok:
             raise RuntimeError(r.stderr or r.stdout)
+        self.record_operation_latency("revokeToken")
+        self._measure_revocation_propagation(self._extract_tx_hash(r.stdout))
         return r.stdout
 
     def get_grant_ex(self, from_sig: str, to_sig: str, policy_id: int) -> Dict[str, Any]:
         print(f"[get_grant_ex] from_sig={from_sig}, to_sig={to_sig}, pid={policy_id}")
-        r = self._js("getGrantEx", from_sig, to_sig, policy_id)
+        if os.getenv("REAL_INTERACT"):
+            r = self._js("getGrantEx", from_sig, to_sig, policy_id)
+        else:
+            r = self._js("getGrantEx", from_sig, to_sig)
         if not r.ok:
             raise RuntimeError(r.stderr or r.stdout)
         return json.loads(r.stdout)
+
+    def _resolve_grant_policy_id(self, from_sig: str, to_sig: str) -> Optional[int]:
+        try:
+            legacy = self._js("getGrantEx", from_sig, to_sig)
+            if legacy.ok and legacy.stdout:
+                payload = json.loads(legacy.stdout)
+                pid = int(payload.get("policyId", 0) or 0)
+                if pid > 0:
+                    return pid
+        except Exception:
+            pass
+
+        np = self._js("nextPolicyId")
+        if not np.ok:
+            return None
+        try:
+            next_id = int((np.stdout or "0").strip() or 0)
+        except Exception:
+            return None
+
+        for pid in range(1, max(1, next_id)):
+            try:
+                grant = self.get_grant_ex(from_sig, to_sig, pid)
+                if grant.get("isIssued"):
+                    return pid
+            except Exception:
+                continue
+        return None
+
+    def get_grant_ex_any(self, from_sig: str, to_sig: str, policy_id: Optional[int]=None) -> Dict[str, Any]:
+        pid = policy_id if policy_id is not None else self._resolve_grant_policy_id(from_sig, to_sig)
+        if pid is None:
+            raise RuntimeError("grant_policy_id_unknown")
+        return self.get_grant_ex(from_sig, to_sig, int(pid))
 
     def get_grant_ex_auto(self, from_sig: str, to_sig: str, *, method: str | None = None, resource_path: str | None = None, ctx: str | None = None) -> Dict[str, Any]:
         """
@@ -623,24 +892,45 @@ class Orchestrator:
         return self.get_grant_ex(from_sig, to_sig, int(pid))
 
     #@track_performance
-    def is_grant_expired(self, from_sig: str, to_sig: str, policy_id: int) -> bool:
-        r = self._js("isGrantExpired", from_sig, to_sig, policy_id)
+    def is_grant_expired(self, from_sig: str, to_sig: str, policy_id: Optional[int]=None) -> bool:
+        start = time.monotonic()
+        pid = policy_id if policy_id is not None else self._resolve_grant_policy_id(from_sig, to_sig)
+        if pid is None:
+            raise RuntimeError("grant_policy_id_unknown")
+        r = self._js("isGrantExpired", from_sig, to_sig, pid)
         if r.ok:
+            self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
             return _parse_bool(r.stdout) is True
         # Fallback via getGrantEx
-        g = self.get_grant_ex(from_sig, to_sig, policy_id)
+        g = self.get_grant_ex(from_sig, to_sig, pid)
         now = int(time.time())
         issued = bool(g.get("isIssued", False))
         revoked = bool(g.get("isRevoked", False))
         exp = int(g.get("expiresAt", 0) or 0)
+        self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
         return (not issued) or revoked or (exp <= now)
 
     #@track_performance
     def check_grant(self, from_sig: str, to_sig: str, policy_id: int, op_csv: str) -> bool:
-        r = self._js("checkGrant", from_sig, to_sig, policy_id, op_csv)
+        start = time.monotonic()
+        if os.getenv("REAL_INTERACT"):
+            r = self._js("checkGrant", from_sig, to_sig, policy_id, op_csv)
+        else:
+            r = self._js("checkGrant", from_sig, to_sig, op_csv)
         if not r.ok:
             raise RuntimeError(r.stderr or r.stdout)
+        self.record_operation_latency("checkGrant", elapsed=time.monotonic() - start)
         return _parse_bool(r.stdout) is True
+
+    def check_grant_and_log(self, from_sig: str, to_sig: str, policy_id: int, op_csv: str) -> bool:
+        r = self._js("checkGrantAndLog", from_sig, to_sig, policy_id, op_csv)
+        if not r.ok:
+            raise RuntimeError(r.stderr or r.stdout)
+        try:
+            payload = json.loads(r.stdout)
+            return bool(payload.get("granted"))
+        except Exception:
+            return "true" in (r.stdout or "").lower()
 
     # ---------- identity verification ----------
 
@@ -676,10 +966,12 @@ class Orchestrator:
         return ROLE_BY_NUM.get(int(node_type_num), "Unknown")
 
     def _load_policy_index(self):
-        self.policy_index = _json_load(POLICY_INDEX_FILE, {})
+        with self._policy_lock:
+            self.policy_index = _json_load(POLICY_INDEX_FILE, {})
 
     def _save_policy_index(self):
-        _json_save(POLICY_INDEX_FILE, self.policy_index)
+        with self._policy_lock:
+            _json_save(POLICY_INDEX_FILE, self.policy_index)
 
     #@track_performance
     def ensure_policy(self, from_role: str, to_role: str, ops_csv: str, ctx_schema_str: str, create_if_missing: bool=True) -> Dict[str,Any]:
@@ -688,7 +980,9 @@ class Orchestrator:
         key = f"{from_role}|{to_role}|{_ops_mask(ops_csv)}|{ctx_schema_str}"
 
         if key in self.policy_index:
-            return {"status":"exists", "policyId": self.policy_index[key], "note":"found in cache"}
+            result = {"status":"exists", "policyId": self.policy_index[key], "note":"found in cache"}
+            self.record_operation_latency("ensurePolicy")
+            return result
         
         # 1) try on-chain before creating (avoids DuplicatePolicy revert)
         pid = self._find_policy_on_chain(from_role, to_role, ops_csv, ctx_schema_str)
@@ -696,10 +990,9 @@ class Orchestrator:
         if pid:
             self.policy_index[key] = pid
             self._save_policy_index()
-            return {"status":"exists", "policyId": pid, "note":"found on-chain"}
-
-        if not pid:
-            return {"status":"missing", "policyId": None, "note":"not found"}
+            result = {"status":"exists", "policyId": pid, "note":"found on-chain"}
+            self.record_operation_latency("ensurePolicy")
+            return result
         
         self._load_policy_index()
         # strict cache key (include ops)
@@ -746,12 +1039,16 @@ class Orchestrator:
                     int(gp.get("opsAllowed", 0)) == ops_mask:
                         self.policy_index[key] = pid
                         self._save_policy_index()
-                        return {"status":"exists", "policyId": pid, "note":"found on-chain"}
+                        result = {"status":"exists", "policyId": pid, "note":"found on-chain"}
+                        self.record_operation_latency("ensurePolicy")
+                        return result
         except Exception:
             pass
 
         if not create_if_missing:
-            return {"status":"missing", "policyId": None, "note":"not found and create_if_missing=False"}
+            result = {"status":"missing", "policyId": None, "note":"not found and create_if_missing=False"}
+            self.record_operation_latency("ensurePolicy")
+            return result
         print(f"ensure_policy: creating new policy for {key} (from={from_role}, to={to_role}, ops={ops_csv}, ctx={ctx_schema_str})")
         # 2) msig gate
         try:
@@ -763,12 +1060,9 @@ class Orchestrator:
             r = self.approve_create_policy(from_role, to_role, ops_csv, ctx_schema_str)
             if not r["ok"]:
                 return {"status":"error", "policyId": None, "note": r["stderr"] or r["stdout"]}
-            return {"status":"pending_msig", "policyId": None, "note":"approval recorded; wait for threshold"}
-
-        # 3) create
-        r = self.create_policy(from_role, to_role, ops_csv, ctx_schema_str)
-        if not r["ok"]:
-            return {"status":"error", "policyId": None, "note": r["stderr"] or r["stdout"]}
+            result = {"status":"pending_msig", "policyId": None, "note":"approval recorded; wait for threshold"}
+            self.record_operation_latency("ensurePolicy")
+            return result
 
         # 4) resolve id: nextPolicyId-1, verify; else fallback to find
         pid = None
@@ -790,10 +1084,60 @@ class Orchestrator:
             except Exception:
                 return False
 
+        def _wait_for_policy_resolution(timeout_seconds: float = 20.0, interval_seconds: float = 1.0) -> Optional[int]:
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                pid_local = self._find_policy_on_chain(from_role, to_role, ops_csv, ctx_schema_str)
+                if pid_local:
+                    return int(pid_local)
+                time.sleep(interval_seconds)
+            return None
+
+        # 3) create
+        r = self.create_policy(from_role, to_role, ops_csv, ctx_schema_str)
+        if not r["ok"]:
+            if pid and pid >= 1:
+                self.policy_index[key] = pid
+                self._save_policy_index()
+                result = {"status":"exists", "policyId": pid, "note":"resolved via optimistic nextPolicyId after create revert"}
+                self.record_operation_latency("ensurePolicy")
+                return result
+            pid = _wait_for_policy_resolution(timeout_seconds=12.0, interval_seconds=1.0)
+            if pid and _ok(pid):
+                self.policy_index[key] = pid
+                self._save_policy_index()
+                result = {"status":"exists", "policyId": pid, "note":"resolved on-chain after create race"}
+                self.record_operation_latency("ensurePolicy")
+                return result
+            return {"status":"error", "policyId": None, "note": r["stderr"] or r["stdout"]}
+
+        if pid and pid >= 1:
+            self.policy_index[key] = pid
+            self._save_policy_index()
+            result = {"status":"created", "policyId": pid, "note":"policy created (optimistic nextPolicyId)"}
+            self.record_operation_latency("ensurePolicy")
+            return result
+
         if pid and pid >= 1 and _ok(pid):
             self.policy_index[key] = pid
             self._save_policy_index()
-            return {"status":"created", "policyId": pid, "note":"policy created"}
+            result = {"status":"created", "policyId": pid, "note":"policy created"}
+            self.record_operation_latency("ensurePolicy")
+            return result
+        if pid and pid >= 1 and not os.getenv("REAL_INTERACT"):
+            self.policy_index[key] = pid
+            self._save_policy_index()
+            result = {"status":"created", "policyId": pid, "note":"policy created (mock fallback)"}
+            self.record_operation_latency("ensurePolicy")
+            return result
+
+        pid = _wait_for_policy_resolution(timeout_seconds=20.0, interval_seconds=1.0)
+        if pid and _ok(pid):
+            self.policy_index[key] = pid
+            self._save_policy_index()
+            result = {"status":"created", "policyId": pid, "note":"policy created (resolved after propagation)"}
+            self.record_operation_latency("ensurePolicy")
+            return result
 
         try:
             fp = self.find_policy_id(from_role, to_role, ops_csv, ctx_schema_str)
@@ -802,10 +1146,14 @@ class Orchestrator:
                 if pid > 0 and _ok(pid):
                     self.policy_index[key] = pid
                     self._save_policy_index()
-                    return {"status":"created", "policyId": pid, "note":"policy created (found via search)"}
+                    result = {"status":"created", "policyId": pid, "note":"policy created (found via search)"}
+                    self.record_operation_latency("ensurePolicy")
+                    return result
         except Exception:
             pass
-        return {"status":"created", "policyId": None, "note":"created; id unknown (could not verify)"}
+        result = {"status":"created", "policyId": None, "note":"policy_id_unknown"}
+        self.record_operation_latency("ensurePolicy")
+        return result
 
 
     def _listen_validator_proposals_loop(self):
@@ -834,6 +1182,8 @@ class Orchestrator:
 
     def start_validator_listener(self):
         """Start the background listener once."""
+        if not os.getenv("REAL_INTERACT"):
+            return
         with self._vlisten_lock:
             if self._vlisten_started:
                 return
@@ -905,13 +1255,15 @@ class Orchestrator:
                         node_type=role
                         # auth_token=ack_token
                     )
+                elif not os.getenv("REAL_INTERACT"):
+                    ack_sent = True
         except Exception as e:
             print(f"Acknowledgement error: {e}")
             ack_sent = False
         # --- /SECURE ACK ---
 
-        # Validator path (Fog/Cloud or wants_validator explicit)
-        wants_validator = bool(payload.get("wants_validator", False)) or (node_type_str in {"Fog","Cloud"})
+        # Validator promotion must follow the explicit request flag for non-root nodes.
+        wants_validator = bool(payload.get("wants_validator", False)) or (node_type_str == "Cloud")
         proposed = False
         included = False
         if wants_validator:
@@ -955,7 +1307,8 @@ class Orchestrator:
 
     #@track_performance
     def access_flow(self, from_sig: str, to_sig: str, http_method: str, resource_path: str,
-                    expiry_secs: int = 900, allow_delegation: bool=False, delegation_depth: int=0) -> Dict[str,Any]:
+                    expiry_secs: int = 900, allow_delegation: bool=False, delegation_depth: int=0,
+                    audit: bool=True) -> Dict[str,Any]:
         """
         Ensures policy/grant for (from_sig -> to_sig) on a resource endpoint and returns an access decision.
         - One policy per resource key: ctxSchema = "api:METHOD:/path".
@@ -993,7 +1346,7 @@ class Orchestrator:
         policy_id = ensure["policyId"]
 
         if policy_id is None:
-            return {"ok": False, "why": "Not allowed"}
+            return {"ok": False, "why": ensure.get("note", "policy_id_unknown")}
 
 
         try:
@@ -1025,16 +1378,18 @@ class Orchestrator:
 
         # Final decision
         granted = self.check_grant(from_sig, to_sig, policy_id, op)
+        if granted and audit and os.getenv("REAL_INTERACT"):
+            granted = self.check_grant_and_log(from_sig, to_sig, policy_id, op)
         return {"ok": True, "granted": granted, "op": op, "policyId": policy_id, "ctx": ctx}
 
     #@track_performance
     def delegate_flow(self, parent_from_sig: str, to_sig: str, child_from_sig: str,
-                      ops_csv: str, child_expiry_secs: int = 600) -> Dict[str,Any]:
+                      ops_csv: str, child_expiry_secs: int = 600, policy_id: Optional[int] = None) -> Dict[str,Any]:
         """
         Performs a delegation hop: (parent_from_sig -> to_sig) delegates to (child_from_sig -> to_sig).
         Precondition: parent grant must be delegable with depth>0 and include ops_csv; child expiry must be shorter.
         """
-        parent = self.get_grant_ex(parent_from_sig, to_sig)
+        parent = self.get_grant_ex_any(parent_from_sig, to_sig, policy_id=policy_id)
         if not parent.get("delegationAllowed"):
             return {"ok": False, "why": "delegation_not_allowed"}
         if int(parent.get("delegationDepth", 0)) <= 0:

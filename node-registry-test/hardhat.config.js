@@ -14,4 +14,9 @@ module.exports = {
     },
     viaIR: true
   },
+  paths: {
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
 };

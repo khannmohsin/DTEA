@@ -1,3 +1,0 @@
-Error: Enode file /Users/khannmohsin/VSCode_Projects/MyDisIoT_Project/Node_client/data/enode.txt not found.
-Starting Besu node...
-Unexpected error: can only concatenate str (not "NoneType") to str

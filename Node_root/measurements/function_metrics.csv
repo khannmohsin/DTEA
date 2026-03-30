@@ -682,3 +682,5 @@ timestamp,function,duration_seconds,memory_kb,total_cpu_time_seconds
 2025-08-26 02:00:58,create_genesis_file,6.7783,0.79,0.0086
 2025-08-26 02:01:05,update_genesis_file,6.8279,3.87,0.0098
 2025-08-26 02:01:12,update_extra_data_in_genesis,6.3541,3.91,0.0099
+2026-03-30 12:36:19,start_blockchain_node,1.7077,2.00,0.0024
+2026-03-30 12:37:24,start_blockchain_node,2.4580,1.96,0.0028

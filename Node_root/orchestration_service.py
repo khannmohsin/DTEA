@@ -28,6 +28,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from pathlib import Path
 # import orchestrator module you already have
 from orchestrator import Orchestrator, METHOD_TO_OP
+from tef_metrics import TokenBucketRateLimiter
 
 # Optional perf decorator (fallback to no-op if absent)
 try:
@@ -74,7 +75,6 @@ def _local_signature_from_node_details(repo_root: str | None) -> str | None:
             Path("node-details.json"),
             Path(repo_root or ".") / "node-details.json",
             Path(repo_root or ".") / "Node_root" / "node-details.json",
-            Path(repo_root or ".") / "Node_client" / "node-details.json",
         ]
         for p in candidates:
             if p.exists():
@@ -97,12 +97,32 @@ def make_app(repo_root: str | None = None) -> Flask:
     # If you prefer a fixed registrar, set it here (else orchestrator uses prefunded_keys.json[0])
     # orch.registrar_addr = "0x1111..."
     local_sig = _local_signature_from_node_details(repo_root)
+    rate_limiter = TokenBucketRateLimiter({
+        "cloud": 200.0,
+        "fog": 100.0,
+        "edge": 50.0,
+        "sensor": 10.0,
+        "actuator": 10.0,
+        "endpoint": 10.0,
+        "unknown": 10.0,
+    })
     # Ensure validator auto‑voter runs even after restarts
     try:
         if local_sig and orch.is_validator():
             orch.start_validator_listener()   # idempotent
     except Exception as _e:
         print(f"[listener] startup check skipped: {_e}")
+
+    @app.before_request
+    def _start_request_timer():
+        orch.begin_request(
+            node_tier=orch.local_node_tier,
+            condition=request.headers.get("X-Latency-Condition")
+        )
+
+    @app.teardown_request
+    def _finish_request_timer(_exc):
+        orch.end_request()
 
     # --------------- routes ---------------
     @app.get("/health")
@@ -202,6 +222,51 @@ def make_app(repo_root: str | None = None) -> Flask:
         except Exception as e:
             return err("validator_query_failed", 500, detail=str(e))
 
+    @app.get("/metrics/latency")
+    def latency_metrics():
+        try:
+            output_path = orch.latency_recorder.write_summary()
+            return ok({"summary": orch.latency_summary(), "output": str(output_path)})
+        except Exception as e:
+            return err("latency_metrics_failed", 500, detail=str(e))
+
+    @app.post("/acknowledgement")
+    def acknowledgement():
+        try:
+            node_id = request.form.get("node_id")
+            enode = request.form.get("enode")
+            if not node_id or not enode:
+                return err("Missing node_id or enode", 400)
+
+            repo_dir = Path(repo_root or ".").resolve()
+            if request.files.get("genesis_file"):
+                genesis_path = repo_dir / "genesis" / "genesis.json"
+                genesis_path.parent.mkdir(parents=True, exist_ok=True)
+                request.files["genesis_file"].save(genesis_path)
+
+            if request.files.get("node_registry_file"):
+                registry_path = repo_dir / "data" / "NodeRegistry.json"
+                registry_path.parent.mkdir(parents=True, exist_ok=True)
+                request.files["node_registry_file"].save(registry_path)
+
+            if request.files.get("prefunded_keys_file"):
+                prefunded_path = repo_dir / "prefunded_keys.json"
+                prefunded_path.parent.mkdir(parents=True, exist_ok=True)
+                request.files["prefunded_keys_file"].save(prefunded_path)
+
+            for rel in ("data/enode.txt", "static/enode.txt", "client_inbox/enode.txt"):
+                enode_path = repo_dir / rel
+                enode_path.parent.mkdir(parents=True, exist_ok=True)
+                enode_path.write_text(enode.strip() + "\n")
+
+            return ok({
+                "status": "success",
+                "message": f"Acknowledgment received for {node_id}",
+                "enode": enode,
+            })
+        except Exception as e:
+            return err("acknowledgement_failed", 500, detail=str(e), trace=traceback.format_exc())
+
     @app.post("/access")
     ##@track_performance
     def access():
@@ -223,6 +288,10 @@ def make_app(repo_root: str | None = None) -> Flask:
         to_sig = req.get("to_signature") or local_sig
         if not to_sig:
             return err("to_signature missing and local node signature not found", 422)
+
+        allowed, retry_after_ms = rate_limiter.allow(to_sig, orch.local_node_tier)
+        if not allowed:
+            return err("rate_limit_exceeded", 429, reason="rate_limit_exceeded", retry_after_ms=retry_after_ms)
         
         try:
             result = orch.access_flow(
@@ -230,7 +299,8 @@ def make_app(repo_root: str | None = None) -> Flask:
                 req["method"], req["resource_path"],
                 int(req.get("expiry_secs", 900)),
                 bool(req.get("allow_delegation", False)),
-                int(req.get("delegation_depth", 0))
+                int(req.get("delegation_depth", 0)),
+                bool(req.get("audit", True))
             )
             print("yoar taaam chu waatnaavun")
             if not result.get("ok"):
@@ -260,7 +330,8 @@ def make_app(repo_root: str | None = None) -> Flask:
         try:
             res = orch.delegate_flow(
                 req["parent_from_sig"], req["to_sig"], req["child_from_sig"],
-                req["ops_csv"], int(req.get("child_expiry_secs", 600))
+                req["ops_csv"], int(req.get("child_expiry_secs", 600)),
+                int(req["policy_id"]) if req.get("policy_id") is not None else None
             )
             if not res.get("ok"):
                 return err(res.get("why", "delegate_failed"), 400, **{k:v for k,v in res.items() if k not in {"ok"}})
@@ -274,7 +345,20 @@ def make_app(repo_root: str | None = None) -> Flask:
         req, bad = require_json(["from_signature", "to_signature"])
         if bad: return bad
         try:
-            tx = orch.revoke_grant(req["from_signature"], req["to_signature"])
+            policy_id = req.get("policy_id")
+            if policy_id is None:
+                if req.get("ctx") or (req.get("method") and req.get("resource_path")):
+                    grant = orch.get_grant_ex_auto(
+                        req["from_signature"],
+                        req["to_signature"],
+                        method=req.get("method"),
+                        resource_path=req.get("resource_path"),
+                        ctx=req.get("ctx")
+                    )
+                    policy_id = grant.get("policyId")
+            if policy_id is None:
+                return err("missing policy_id", 422)
+            tx = orch.revoke_grant(req["from_signature"], req["to_signature"], int(policy_id))
             return ok({"tx": tx})
         except Exception as e:
             return err("revoke_failed", 500, detail=str(e))
@@ -299,6 +383,38 @@ def make_app(repo_root: str | None = None) -> Flask:
             return ok({"grant": gx})
         except Exception as e:
             return err("grant_query_failed", 500, detail=str(e))
+
+    @app.get("/expiry-check")
+    def expiry_check():
+        from_sig = request.args.get("from_signature")
+        to_sig = request.args.get("to_signature")
+        if not from_sig or not to_sig:
+            return err("from_signature and to_signature are required", 422)
+
+        policy_id = request.args.get("policy_id")
+        method = request.args.get("method")
+        path = request.args.get("resource_path")
+        ctx = request.args.get("ctx")
+
+        try:
+            expired = orch.is_grant_expired(
+                from_sig,
+                to_sig,
+                int(policy_id) if policy_id is not None else None,
+            ) if policy_id is not None else orch.is_grant_expired(
+                from_sig,
+                to_sig,
+                orch.get_grant_ex_auto(
+                    from_sig,
+                    to_sig,
+                    method=method,
+                    resource_path=path,
+                    ctx=ctx,
+                ).get("policyId")
+            )
+            return ok({"expired": bool(expired)})
+        except Exception as e:
+            return err("expiry_check_failed", 500, detail=str(e))
 
     # Convenience endpoints that mirror your old style (read/write/update/remove)
     # These just call /access under the hood with the correct op, using METHOD_TO_OP mapping.

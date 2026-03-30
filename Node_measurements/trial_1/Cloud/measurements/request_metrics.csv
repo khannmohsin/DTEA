@@ -1,7 +1,0 @@
-timestamp,function,duration_seconds,payload_size_bytes,response_size_bytes
-2025-07-17 14:41:16,register_node,6.7064,503,117
-2025-07-17 15:01:01,read_data,21.7872,423,94
-2025-07-17 15:05:30,register_node,6.7547,503,117
-2025-07-17 15:22:02,read_data,26.7335,423,94
-2025-07-17 15:31:42,register_node,16.7224,503,117
-2025-07-17 15:52:26,read_data,25.7225,423,94

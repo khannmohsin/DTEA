@@ -1,7 +1,0 @@
-timestamp,function,duration_seconds,memory_kb,total_cpu_time_seconds
-2025-07-17 14:42:27,generate_keys,0.3945,102.95,0.2472
-
-2025-07-17 15:06:09,generate_keys,0.2371,103.05,0.2357
-
-2025-07-17 15:25:14,generate_keys,0.2355,103.04,0.2343
-

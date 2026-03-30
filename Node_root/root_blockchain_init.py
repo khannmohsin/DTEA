@@ -238,6 +238,9 @@ class BlockchainInit:
         addresses = [entry["address"] for entry in data["prefunded_accounts"]]
 
         first_address = addresses[0]
+        rpc_http_port = os.getenv("ROOT_BESU_RPC_PORT", "8545")
+        p2p_port = os.getenv("ROOT_BESU_P2P_PORT", "30303")
+        metrics_port = os.getenv("ROOT_BESU_METRICS_PORT", "9545")
 
         try:
             print("Starting Besu node...")
@@ -247,20 +250,21 @@ class BlockchainInit:
                 "--data-path=" + self.data_path,
                 "--node-private-key-file=" + self.private_key,
                 "--genesis-file=" + self.genesis_file,
+                "--network-id=1337",
                 "--rpc-http-enabled",
                 "--rpc-http-host=0.0.0.0", 
                 "--rpc-http-api=ETH,NET,QBFT,ADMIN,WEB3,TXPOOL,MINER",
                 "--host-allowlist=*",
-                "--miner-enabled",
-                "--miner-coinbase=" + first_address,
                 "--min-gas-price=0",
                 "--rpc-http-cors-origins=all",
+                "--rpc-http-port=" + str(rpc_http_port),
                 "--p2p-host=" + str(ip_address),
+                "--p2p-port=" + str(p2p_port),
                 # ✅ Metrics config
-                 "--metrics-enabled",
+                "--metrics-enabled",
                 "--metrics-host=0.0.0.0",
-                "--metrics-port=9545",
-                "--metrics-category=BLOCKCHAIN,JVM,NETWORK,RPC,TRANSACTION_POOL,PEERS,SYNCHRONIZER,ETHEREUM,PERMISSIONING","PROCESS"
+                "--metrics-port=" + str(metrics_port),
+                "--metrics-category=BLOCKCHAIN,JVM,NETWORK,RPC,TRANSACTION_POOL,PEERS,SYNCHRONIZER,ETHEREUM,PERMISSIONING,PROCESS"
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
