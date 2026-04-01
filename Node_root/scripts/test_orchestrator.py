@@ -680,6 +680,56 @@ def test_is_grant_expired_wrapper(orch, state):
     }
     assert orch.is_grant_expired(f, t) is True
 
+
+def test_access_flow_emits_correlated_process_events(orch, state):
+    from_sig, to_sig = "sig-evt-a", "sig-evt-b"
+    _register_pair(state, orch, from_sig, "Edge", to_sig, "Fog")
+
+    orch.start_flow(
+        "access",
+        stage="request_received",
+        message="Access request received",
+        component="api",
+        from_signature=from_sig,
+        to_signature=to_sig,
+    )
+    out = orch.access_flow(from_sig, to_sig, "GET", "/timeline")
+
+    assert out["ok"] is True
+    events = orch.recent_events(limit=20)
+    stages = [event["stage"] for event in events]
+    flow_ids = {event["flow_id"] for event in events}
+    assert "registration_validation" in stages
+    assert "role_resolution" in stages
+    assert "grant_check" in stages
+    assert len(flow_ids) == 1
+
+
+def test_registration_flow_emits_signature_and_status_events(orch, state):
+    payload = {
+        "node_id": "EVT-REG-1",
+        "node_name": "EdgeReg",
+        "node_type": "Edge",
+        "public_key": "0xabc",
+        "address": state["last_address"],
+        "rpcURL": "http://x",
+        "signature": "sig-reg-events",
+    }
+    orch.start_flow(
+        "registration",
+        stage="request_received",
+        message="Registration request received",
+        component="api",
+        from_signature=payload["signature"],
+    )
+    out = orch.registration_flow(payload)
+
+    assert out["ok"] is True
+    stages = [event["stage"] for event in orch.recent_events(limit=20)]
+    assert "signature_verification" in stages
+    assert "already_registered_check" in stages
+    assert "registration_submit" in stages
+
 # ------------- helpers -------------
 
 def _seed_grant(orch, from_sig, to_sig, op="READ", expires_secs=600, delegable=False, depth=0):

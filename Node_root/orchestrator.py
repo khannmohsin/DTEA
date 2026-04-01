@@ -21,6 +21,7 @@ import re
 import subprocess
 import time
 import statistics
+import uuid
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
 from acknowledgement import AcknowledgementSender
@@ -51,7 +52,7 @@ try:
 except Exception:
     Web3 = None
 
-from tef_metrics import LatencyRecorder, TokenBucketRateLimiter, ensure_results_dir
+from tef_metrics import LatencyRecorder, ProcessEventRecorder, ensure_results_dir
     
 # --------------- constants ---------------
 
@@ -225,6 +226,14 @@ class Orchestrator:
         self._vlisten_started = False
         self._voted_addrs = set()  
         self.local_node_tier = (self.nd.get("node_type") or registrar_role or "Unknown").strip().lower()
+        self.local_node_id = (self.nd.get("node_id") or self.nd.get("id") or "").strip()
+        self.local_node_name = (self.nd.get("node_name") or self.nd.get("name") or "").strip()
+        self.event_recorder = ProcessEventRecorder(
+            self.results_dir,
+            node_id=self.local_node_id,
+            node_name=self.local_node_name,
+            node_tier=self.local_node_tier,
+        )
         self._init_web3_contract()
         self._start_policy_cache_watcher()
 
@@ -278,15 +287,18 @@ class Orchestrator:
         with self._request_lock:
             self._active_requests += 1
             concurrency = self._active_requests
+        self._request_ctx.request_id = f"req-{uuid.uuid4().hex[:12]}"
         self._request_ctx.start_monotonic = time.monotonic()
         self._request_ctx.node_tier = tier
         self._request_ctx.condition_override = (condition or "").strip().lower() or None
         self._request_ctx.concurrency = concurrency
+        self._request_ctx.current_flow_id = None
+        self._request_ctx.current_flow_type = None
 
     def end_request(self) -> None:
         with self._request_lock:
             self._active_requests = max(0, self._active_requests - 1)
-        for attr in ("start_monotonic", "node_tier", "condition_override", "concurrency"):
+        for attr in ("request_id", "start_monotonic", "node_tier", "condition_override", "concurrency", "current_flow_id", "current_flow_type"):
             if hasattr(self._request_ctx, attr):
                 delattr(self._request_ctx, attr)
 
@@ -317,6 +329,134 @@ class Orchestrator:
 
     def latency_summary(self) -> Dict[str, Any]:
         return self.latency_recorder.summary()
+
+    def current_request_id(self) -> Optional[str]:
+        return getattr(self._request_ctx, "request_id", None)
+
+    def current_flow_id(self) -> Optional[str]:
+        return getattr(self._request_ctx, "current_flow_id", None)
+
+    def current_flow_type(self) -> Optional[str]:
+        return getattr(self._request_ctx, "current_flow_type", None)
+
+    def _new_flow_id(self, flow_type: str) -> str:
+        return f"{flow_type}-{uuid.uuid4().hex[:12]}"
+
+    def start_flow(
+        self,
+        flow_type: str,
+        *,
+        stage: str,
+        message: str,
+        component: str = "api",
+        details: Optional[Dict[str, Any]] = None,
+        set_current: bool = True,
+        flow_id: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        flow_id = flow_id or self._new_flow_id(flow_type)
+        if set_current:
+            self._request_ctx.current_flow_id = flow_id
+            self._request_ctx.current_flow_type = flow_type
+        self.emit_event(
+            component=component,
+            flow_type=flow_type,
+            flow_id=flow_id,
+            stage=stage,
+            status="started",
+            message=message,
+            details=details,
+            **kwargs,
+        )
+        return flow_id
+
+    def emit_event(
+        self,
+        *,
+        component: str,
+        stage: str,
+        status: str,
+        message: str,
+        flow_type: Optional[str] = None,
+        flow_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        duration_ms: Optional[float] = None,
+        request_id: Optional[str] = None,
+        tx_hash: Optional[str] = None,
+        policy_id: Optional[int] = None,
+        from_signature: Optional[str] = None,
+        to_signature: Optional[str] = None,
+        node_id: Optional[str] = None,
+        node_name: Optional[str] = None,
+        node_tier: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        resolved_flow_id = flow_id or self.current_flow_id() or self._new_flow_id(flow_type or "daemon")
+        resolved_flow_type = flow_type or self.current_flow_type() or "daemon"
+        return self.event_recorder.emit(
+            component=component,
+            flow_type=resolved_flow_type,
+            flow_id=resolved_flow_id,
+            stage=stage,
+            status=status,
+            message=message,
+            details=details or {},
+            duration_ms=duration_ms,
+            request_id=request_id or self.current_request_id(),
+            tx_hash=tx_hash,
+            policy_id=policy_id,
+            from_signature=from_signature,
+            to_signature=to_signature,
+            node_id=node_id or self.local_node_id,
+            node_name=node_name or self.local_node_name,
+            node_tier=node_tier or getattr(self._request_ctx, "node_tier", None) or self.local_node_tier,
+        )
+
+    def finish_flow(
+        self,
+        status: str,
+        *,
+        stage: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+        component: str = "orchestrator",
+        flow_id: Optional[str] = None,
+        flow_type: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        resolved_flow_id = flow_id or self.current_flow_id()
+        resolved_flow_type = flow_type or self.current_flow_type()
+        event = self.emit_event(
+            component=component,
+            flow_type=resolved_flow_type,
+            flow_id=resolved_flow_id,
+            stage=stage,
+            status=status,
+            message=message,
+            details=details,
+            **kwargs,
+        )
+        if resolved_flow_id and resolved_flow_id == self.current_flow_id():
+            self._request_ctx.current_flow_id = None
+            self._request_ctx.current_flow_type = None
+        return event
+
+    def recent_events(self, limit: int = 100) -> List[Dict[str, Any]]:
+        return self.event_recorder.recent(limit=limit)
+
+    def wait_for_events(self, after_sequence: int = 0, timeout: float = 2.0) -> List[Dict[str, Any]]:
+        return self.event_recorder.wait_for_events(after_sequence=after_sequence, timeout=timeout)
+
+    def latest_event_sequence(self) -> int:
+        return self.event_recorder.latest_sequence()
+
+    def flow_summaries(self, limit: int = 50) -> List[Dict[str, Any]]:
+        return self.event_recorder.flows(limit=limit)
+
+    def active_flow_summaries(self) -> List[Dict[str, Any]]:
+        return self.event_recorder.active_flows()
+
+    def event_stats(self) -> Dict[str, Any]:
+        return self.event_recorder.stats()
 
     def _extract_tx_hash(self, text: str) -> str:
         match = re.search(r"0x[a-fA-F0-9]{64}", text or "")
@@ -361,6 +501,13 @@ class Orchestrator:
         if not tx_hash:
             return
         try:
+            self.emit_event(
+                component="blockchain",
+                stage="revocation_propagation_wait",
+                status="waiting",
+                message="Waiting for validators to observe the revocation block",
+                tx_hash=tx_hash,
+            )
             receipt = self._eth_tx_receipt(tx_hash)
             if not receipt:
                 return
@@ -380,7 +527,17 @@ class Orchestrator:
                     except Exception:
                         pass
                 if seen == len(validator_urls):
+                    duration_ms = (time.monotonic() - start) * 1000
                     self.record_operation_latency("revokeTokenPropagation", elapsed=time.monotonic() - start)
+                    self.emit_event(
+                        component="blockchain",
+                        stage="revocation_propagation_observed",
+                        status="ok",
+                        message="All validator nodes observed the revocation block",
+                        tx_hash=tx_hash,
+                        duration_ms=duration_ms,
+                        details={"validator_count": len(validator_urls), "target_block": target_block},
+                    )
                     return
                 time.sleep(1)
         except Exception:
@@ -423,7 +580,29 @@ class Orchestrator:
                 changed_ids = []
                 for event in updated + deprecated:
                     changed_ids.append(int(event["args"]["policyId"]))
+                    self.emit_event(
+                        component="policy_cache",
+                        flow_type="cache",
+                        flow_id=self._new_flow_id("cache"),
+                        stage="policy_event_seen",
+                        status="ok",
+                        message="Policy change event observed",
+                        details={
+                            "policy_id": int(event["args"]["policyId"]),
+                            "event": event["event"],
+                        },
+                    )
                 self._invalidate_policy_ids(changed_ids)
+                if changed_ids:
+                    self.emit_event(
+                        component="policy_cache",
+                        flow_type="cache",
+                        flow_id=self._new_flow_id("cache"),
+                        stage="cache_entries_invalidated",
+                        status="ok",
+                        message="Policy cache entries invalidated",
+                        details={"policy_ids": changed_ids},
+                    )
                 self._policy_poll_block = latest + 1
             except Exception:
                 time.sleep(2)
@@ -505,10 +684,29 @@ class Orchestrator:
         """
         def _wait():
             waited = 0
+            flow_id = self._new_flow_id("validator")
+            self.emit_event(
+                component="validator_listener",
+                flow_type="validator",
+                flow_id=flow_id,
+                stage="validator_wait",
+                status="waiting",
+                message="Waiting for this node to become a validator before starting the listener",
+                from_signature=my_signature,
+            )
             while waited < max_wait_sec and not self._vlisten_started:
                 try:
                     if self.is_validator():
                         self.start_validator_listener()
+                        self.emit_event(
+                            component="validator_listener",
+                            flow_type="validator",
+                            flow_id=flow_id,
+                            stage="validator_wait",
+                            status="ok",
+                            message="This node became a validator",
+                            from_signature=my_signature,
+                        )
                         return
                 except Exception:
                     pass
@@ -547,6 +745,16 @@ class Orchestrator:
                 out = self.proposeValidatorVote(addr, "true")
                 print("________")
                 print(f"[propose] qbft vote yes FROM_IDX={idx}: {out.strip()}")
+                self.emit_event(
+                    component="validator_listener",
+                    flow_type="validator",
+                    flow_id=self.current_flow_id() or self._new_flow_id("validator"),
+                    stage="validator_vote_submitted",
+                    status="ok",
+                    message="Validator vote submitted",
+                    details={"address": addr, "from_idx": idx},
+                    tx_hash=self._extract_tx_hash(out),
+                )
                 ok_any = True
             except Exception as e:
                 print(f"[propose] vote error FROM_IDX={idx}: {e}")
@@ -608,10 +816,27 @@ class Orchestrator:
             env["FROM_IDX"] = str(from_idx)
         print("*******************************************************************************")
         print(f"[register_node] node_id={node_id}, node_name={node_name}, node_type={node_type_str}, public_key={public_key}, registered_by_addr={registered_by_addr}, rpcURL={rpcURL}, registered_by_node_type_str={registered_by_node_type_str}, node_signature={node_signature}")
+        self.emit_event(
+            component="blockchain",
+            stage="registration_submit",
+            status="started",
+            message="Submitting node registration transaction",
+            details={"node_id": node_id, "node_name": node_name, "node_type": node_type_str, "rpc_url": rpcURL},
+            from_signature=node_signature,
+        )
         r = self._js("registerNode", node_id, node_name, node_type_str, public_key, registered_by_addr, rpcURL, registered_by_node_type_str, node_signature)
         print(f"[register_node] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
         self.record_operation_latency("registerNode")
+        self.emit_event(
+            component="blockchain",
+            stage="registration_submit",
+            status="ok",
+            message="Node registration transaction submitted",
+            details={"node_id": node_id},
+            tx_hash=self._extract_tx_hash(r.stdout),
+            from_signature=node_signature,
+        )
         return r.stdout
 
     #@track_performance
@@ -764,10 +989,30 @@ class Orchestrator:
         env = os.environ.copy()
         if from_idx is not None:
             env["FROM_IDX"] = str(from_idx)
+        self.emit_event(
+            component="blockchain",
+            stage="issue_grant_submit",
+            status="started",
+            message="Issuing capability token",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"ops": ops_csv, "expires_at": expires_at},
+        )
         r = self._js("issueGrant", from_sig, to_sig, policy_id, ops_csv, expires_at, env=env)
         print(f"[issue_grant] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
         self.record_operation_latency("issueToken")
+        self.emit_event(
+            component="blockchain",
+            stage="issue_grant_submit",
+            status="ok",
+            message="Capability token issued",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            tx_hash=self._extract_tx_hash(r.stdout),
+        )
         return r.stdout
 
     #@track_performance
@@ -776,9 +1021,29 @@ class Orchestrator:
         if from_idx is not None:
             env["FROM_IDX"] = str(from_idx)
         allow = "true" if delegation_allowed else "false"
+        self.emit_event(
+            component="blockchain",
+            stage="issue_delegable_grant_submit",
+            status="started",
+            message="Issuing delegable capability token",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"ops": ops_csv, "expires_at": expires_at, "delegation_allowed": delegation_allowed, "delegation_depth": delegation_depth},
+        )
         r = self._js("issueGrantDelegable", from_sig, to_sig, policy_id, ops_csv, expires_at, allow, delegation_depth, env=env)
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
         self.record_operation_latency("issueTokenDelegable")
+        self.emit_event(
+            component="blockchain",
+            stage="issue_delegable_grant_submit",
+            status="ok",
+            message="Delegable capability token issued",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            tx_hash=self._extract_tx_hash(r.stdout),
+        )
         return r.stdout
 
     #@track_performance
@@ -786,6 +1051,15 @@ class Orchestrator:
         env = os.environ.copy()
         if from_idx is not None:
             env["FROM_IDX"] = str(from_idx)
+        self.emit_event(
+            component="blockchain",
+            stage="delegation_submit",
+            status="started",
+            message="Submitting delegation transaction",
+            from_signature=current_from_sig,
+            to_signature=to_sig,
+            details={"child_from_signature": new_from_sig, "ops": ops_csv, "expires_at": expires_at},
+        )
         if os.getenv("REAL_INTERACT"):
             policy_id = self._resolve_grant_policy_id(current_from_sig, to_sig)
             if policy_id is None:
@@ -795,6 +1069,16 @@ class Orchestrator:
             r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, ops_csv, expires_at, env=env)
         if not r.ok: raise RuntimeError(r.stderr or r.stdout)
         self.record_operation_latency("delegateToken")
+        self.emit_event(
+            component="blockchain",
+            stage="delegation_submit",
+            status="ok",
+            message="Delegation transaction submitted",
+            from_signature=current_from_sig,
+            to_signature=to_sig,
+            tx_hash=self._extract_tx_hash(r.stdout),
+            details={"child_from_signature": new_from_sig},
+        )
         return r.stdout
 
     #@track_performance
@@ -802,11 +1086,31 @@ class Orchestrator:
         env = os.environ.copy()
         if from_idx is not None:
             env["FROM_IDX"] = str(from_idx)
+        self.emit_event(
+            component="blockchain",
+            stage="revoke_submit",
+            status="started",
+            message="Submitting revocation transaction",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+        )
         r = self._js("revokeGrant", from_sig, to_sig, policy_id, env=env)
         if not r.ok:
             raise RuntimeError(r.stderr or r.stdout)
         self.record_operation_latency("revokeToken")
-        self._measure_revocation_propagation(self._extract_tx_hash(r.stdout))
+        tx_hash = self._extract_tx_hash(r.stdout)
+        self.emit_event(
+            component="blockchain",
+            stage="revoke_submit",
+            status="ok",
+            message="Revocation transaction submitted",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            tx_hash=tx_hash,
+        )
+        self._measure_revocation_propagation(tx_hash)
         return r.stdout
 
     def get_grant_ex(self, from_sig: str, to_sig: str, policy_id: int) -> Dict[str, Any]:
@@ -897,10 +1201,31 @@ class Orchestrator:
         pid = policy_id if policy_id is not None else self._resolve_grant_policy_id(from_sig, to_sig)
         if pid is None:
             raise RuntimeError("grant_policy_id_unknown")
+        self.emit_event(
+            component="blockchain",
+            stage="expiry_check",
+            status="started",
+            message="Checking whether the grant is expired",
+            policy_id=pid,
+            from_signature=from_sig,
+            to_signature=to_sig,
+        )
         r = self._js("isGrantExpired", from_sig, to_sig, pid)
         if r.ok:
+            expired = _parse_bool(r.stdout) is True
             self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
-            return _parse_bool(r.stdout) is True
+            self.emit_event(
+                component="blockchain",
+                stage="expiry_check",
+                status="ok",
+                message="Grant expiry evaluated",
+                policy_id=pid,
+                from_signature=from_sig,
+                to_signature=to_sig,
+                duration_ms=(time.monotonic() - start) * 1000,
+                details={"expired": expired},
+            )
+            return expired
         # Fallback via getGrantEx
         g = self.get_grant_ex(from_sig, to_sig, pid)
         now = int(time.time())
@@ -908,11 +1233,33 @@ class Orchestrator:
         revoked = bool(g.get("isRevoked", False))
         exp = int(g.get("expiresAt", 0) or 0)
         self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
-        return (not issued) or revoked or (exp <= now)
+        expired = (not issued) or revoked or (exp <= now)
+        self.emit_event(
+            component="blockchain",
+            stage="expiry_check",
+            status="ok",
+            message="Grant expiry evaluated through fallback grant lookup",
+            policy_id=pid,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            duration_ms=(time.monotonic() - start) * 1000,
+            details={"expired": expired, "fallback": True},
+        )
+        return expired
 
     #@track_performance
     def check_grant(self, from_sig: str, to_sig: str, policy_id: int, op_csv: str) -> bool:
         start = time.monotonic()
+        self.emit_event(
+            component="blockchain",
+            stage="grant_check",
+            status="started",
+            message="Checking grant with eth_call",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"ops": op_csv},
+        )
         if os.getenv("REAL_INTERACT"):
             r = self._js("checkGrant", from_sig, to_sig, policy_id, op_csv)
         else:
@@ -920,17 +1267,50 @@ class Orchestrator:
         if not r.ok:
             raise RuntimeError(r.stderr or r.stdout)
         self.record_operation_latency("checkGrant", elapsed=time.monotonic() - start)
-        return _parse_bool(r.stdout) is True
+        granted = _parse_bool(r.stdout) is True
+        self.emit_event(
+            component="blockchain",
+            stage="grant_check",
+            status="ok",
+            message="Grant check completed",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            duration_ms=(time.monotonic() - start) * 1000,
+            details={"granted": granted, "ops": op_csv},
+        )
+        return granted
 
     def check_grant_and_log(self, from_sig: str, to_sig: str, policy_id: int, op_csv: str) -> bool:
+        self.emit_event(
+            component="blockchain",
+            stage="grant_audit",
+            status="started",
+            message="Submitting auditable grant decision transaction",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"ops": op_csv},
+        )
         r = self._js("checkGrantAndLog", from_sig, to_sig, policy_id, op_csv)
         if not r.ok:
             raise RuntimeError(r.stderr or r.stdout)
         try:
             payload = json.loads(r.stdout)
-            return bool(payload.get("granted"))
+            granted = bool(payload.get("granted"))
         except Exception:
-            return "true" in (r.stdout or "").lower()
+            granted = "true" in (r.stdout or "").lower()
+        self.emit_event(
+            component="blockchain",
+            stage="grant_audit",
+            status="ok",
+            message="Auditable grant decision recorded",
+            policy_id=policy_id,
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"granted": granted},
+        )
+        return granted
 
     # ---------- identity verification ----------
 
@@ -980,16 +1360,45 @@ class Orchestrator:
         key = f"{from_role}|{to_role}|{_ops_mask(ops_csv)}|{ctx_schema_str}"
 
         if key in self.policy_index:
+            self.emit_event(
+                component="policy_cache",
+                stage="policy_cache_hit",
+                status="reused",
+                message="Policy resolved from the local cache",
+                details={"cache_key": key, "policy_id": self.policy_index[key]},
+            )
             result = {"status":"exists", "policyId": self.policy_index[key], "note":"found in cache"}
             self.record_operation_latency("ensurePolicy")
             return result
+        self.emit_event(
+            component="policy_cache",
+            stage="policy_cache_miss",
+            status="started",
+            message="Policy not found in the local cache",
+            details={"cache_key": key},
+        )
         
         # 1) try on-chain before creating (avoids DuplicatePolicy revert)
+        self.emit_event(
+            component="blockchain",
+            stage="policy_lookup",
+            status="started",
+            message="Looking up policy on chain",
+            details={"from_role": from_role, "to_role": to_role, "ops": ops_csv, "ctx": ctx_schema_str},
+        )
         pid = self._find_policy_on_chain(from_role, to_role, ops_csv, ctx_schema_str)
         
         if pid:
             self.policy_index[key] = pid
             self._save_policy_index()
+            self.emit_event(
+                component="blockchain",
+                stage="policy_lookup",
+                status="reused",
+                message="Policy found on chain",
+                policy_id=pid,
+                details={"cache_key": key},
+            )
             result = {"status":"exists", "policyId": pid, "note":"found on-chain"}
             self.record_operation_latency("ensurePolicy")
             return result
@@ -1039,6 +1448,13 @@ class Orchestrator:
                     int(gp.get("opsAllowed", 0)) == ops_mask:
                         self.policy_index[key] = pid
                         self._save_policy_index()
+                        self.emit_event(
+                            component="blockchain",
+                            stage="policy_lookup",
+                            status="reused",
+                            message="Policy found on chain through indexed search",
+                            policy_id=pid,
+                        )
                         result = {"status":"exists", "policyId": pid, "note":"found on-chain"}
                         self.record_operation_latency("ensurePolicy")
                         return result
@@ -1050,6 +1466,13 @@ class Orchestrator:
             self.record_operation_latency("ensurePolicy")
             return result
         print(f"ensure_policy: creating new policy for {key} (from={from_role}, to={to_role}, ops={ops_csv}, ctx={ctx_schema_str})")
+        self.emit_event(
+            component="blockchain",
+            stage="policy_create",
+            status="started",
+            message="Creating a new policy on chain",
+            details={"from_role": from_role, "to_role": to_role, "ops": ops_csv, "ctx": ctx_schema_str},
+        )
         # 2) msig gate
         try:
             msig = self.msig_info()
@@ -1060,6 +1483,13 @@ class Orchestrator:
             r = self.approve_create_policy(from_role, to_role, ops_csv, ctx_schema_str)
             if not r["ok"]:
                 return {"status":"error", "policyId": None, "note": r["stderr"] or r["stdout"]}
+            self.emit_event(
+                component="blockchain",
+                stage="policy_create",
+                status="waiting",
+                message="Policy creation is waiting for multisig approval",
+                details={"from_role": from_role, "to_role": to_role, "ops": ops_csv},
+            )
             result = {"status":"pending_msig", "policyId": None, "note":"approval recorded; wait for threshold"}
             self.record_operation_latency("ensurePolicy")
             return result
@@ -1099,6 +1529,13 @@ class Orchestrator:
             if pid and pid >= 1:
                 self.policy_index[key] = pid
                 self._save_policy_index()
+                self.emit_event(
+                    component="blockchain",
+                    stage="policy_create",
+                    status="reused",
+                    message="Policy creation resolved to an existing on-chain policy",
+                    policy_id=pid,
+                )
                 result = {"status":"exists", "policyId": pid, "note":"resolved via optimistic nextPolicyId after create revert"}
                 self.record_operation_latency("ensurePolicy")
                 return result
@@ -1106,6 +1543,13 @@ class Orchestrator:
             if pid and _ok(pid):
                 self.policy_index[key] = pid
                 self._save_policy_index()
+                self.emit_event(
+                    component="blockchain",
+                    stage="policy_create",
+                    status="reused",
+                    message="Policy creation raced with an existing policy and resolved cleanly",
+                    policy_id=pid,
+                )
                 result = {"status":"exists", "policyId": pid, "note":"resolved on-chain after create race"}
                 self.record_operation_latency("ensurePolicy")
                 return result
@@ -1114,6 +1558,13 @@ class Orchestrator:
         if pid and pid >= 1:
             self.policy_index[key] = pid
             self._save_policy_index()
+            self.emit_event(
+                component="blockchain",
+                stage="policy_create",
+                status="ok",
+                message="Policy created on chain",
+                policy_id=pid,
+            )
             result = {"status":"created", "policyId": pid, "note":"policy created (optimistic nextPolicyId)"}
             self.record_operation_latency("ensurePolicy")
             return result
@@ -1121,12 +1572,26 @@ class Orchestrator:
         if pid and pid >= 1 and _ok(pid):
             self.policy_index[key] = pid
             self._save_policy_index()
+            self.emit_event(
+                component="blockchain",
+                stage="policy_create",
+                status="ok",
+                message="Policy created on chain",
+                policy_id=pid,
+            )
             result = {"status":"created", "policyId": pid, "note":"policy created"}
             self.record_operation_latency("ensurePolicy")
             return result
         if pid and pid >= 1 and not os.getenv("REAL_INTERACT"):
             self.policy_index[key] = pid
             self._save_policy_index()
+            self.emit_event(
+                component="blockchain",
+                stage="policy_create",
+                status="ok",
+                message="Policy created through the mock interact path",
+                policy_id=pid,
+            )
             result = {"status":"created", "policyId": pid, "note":"policy created (mock fallback)"}
             self.record_operation_latency("ensurePolicy")
             return result
@@ -1135,6 +1600,13 @@ class Orchestrator:
         if pid and _ok(pid):
             self.policy_index[key] = pid
             self._save_policy_index()
+            self.emit_event(
+                component="blockchain",
+                stage="policy_create",
+                status="ok",
+                message="Policy created after propagation delay",
+                policy_id=pid,
+            )
             result = {"status":"created", "policyId": pid, "note":"policy created (resolved after propagation)"}
             self.record_operation_latency("ensurePolicy")
             return result
@@ -1146,6 +1618,13 @@ class Orchestrator:
                 if pid > 0 and _ok(pid):
                     self.policy_index[key] = pid
                     self._save_policy_index()
+                    self.emit_event(
+                        component="blockchain",
+                        stage="policy_create",
+                        status="ok",
+                        message="Policy created and confirmed through indexed search",
+                        policy_id=pid,
+                    )
                     result = {"status":"created", "policyId": pid, "note":"policy created (found via search)"}
                     self.record_operation_latency("ensurePolicy")
                     return result
@@ -1172,6 +1651,16 @@ class Orchestrator:
                     addrs = [m.group(0).lower() for m in pattern.finditer(r.stdout or "")]
                     print(f"[listener] found proposed addresses: {addrs}")
                     if addrs:
+                        flow_id = self._new_flow_id("validator")
+                        self.emit_event(
+                            component="validator_listener",
+                            flow_type="validator",
+                            flow_id=flow_id,
+                            stage="validator_proposal_detected",
+                            status="ok",
+                            message="Validator proposal detected",
+                            details={"addresses": addrs},
+                        )
                         cur = self._normalize_validators(self.qbft_get_validators())
                         for a in addrs:
                             if a not in cur:
@@ -1189,6 +1678,14 @@ class Orchestrator:
                 return
             self._vlisten_started = True
         print("[listener] starting validator listener thread")
+        self.emit_event(
+            component="validator_listener",
+            flow_type="validator",
+            flow_id=self._new_flow_id("validator"),
+            stage="listener_started",
+            status="started",
+            message="Validator listener thread started",
+        )
         t = threading.Thread(target=self._listen_validator_proposals_loop, name="validator-listener", daemon=True)
         t.start()
         print("[listener] validator listener started")
@@ -1201,15 +1698,64 @@ class Orchestrator:
           node_id, node_name, node_type, public_key, address, rpcURL, signature
         Output: dict describing status and role (validator vs non-validator vs endpoint).
         """
+        if not self.current_flow_id():
+            self.start_flow(
+                "registration",
+                stage="request_received",
+                message="Registration request received",
+                component="orchestrator",
+                details={"node_id": payload.get("node_id"), "node_type": payload.get("node_type")},
+                from_signature=payload.get("signature"),
+            )
         if not self.check_if_deployed():
             return {"ok": False, "why": "contract_not_deployed"}
 
         # print(f"registration_flow: payload={payload}")
-        if self.enforce_signature and not self.verify_signature(payload):
+        self.emit_event(
+            component="orchestrator",
+            stage="signature_verification",
+            status="started",
+            message="Verifying registration signature",
+            details={"node_id": payload.get("node_id"), "node_type": payload.get("node_type")},
+            from_signature=payload.get("signature"),
+        )
+        signature_ok = True if not self.enforce_signature else self.verify_signature(payload)
+        if self.enforce_signature and not signature_ok:
+            self.emit_event(
+                component="orchestrator",
+                stage="signature_verification",
+                status="error",
+                message="Registration signature verification failed",
+                details={"node_id": payload.get("node_id")},
+                from_signature=payload.get("signature"),
+            )
             return {"ok": False, "why": "signature_verification_failed"}
+        self.emit_event(
+            component="orchestrator",
+            stage="signature_verification",
+            status="ok",
+            message="Registration signature verified",
+            details={"enforced": self.enforce_signature},
+            from_signature=payload.get("signature"),
+        )
         
         sig = payload["signature"]
+        self.emit_event(
+            component="orchestrator",
+            stage="already_registered_check",
+            status="started",
+            message="Checking whether the node is already registered",
+            from_signature=sig,
+        )
         already = self.is_node_registered(sig)
+        self.emit_event(
+            component="orchestrator",
+            stage="already_registered_check",
+            status="reused" if already else "ok",
+            message="Node registration status resolved",
+            details={"already_registered": already},
+            from_signature=sig,
+        )
 
         # Role decision and ack happen regardless of already-registered.
         node_type_str = payload["node_type"]
@@ -1242,6 +1788,14 @@ class Orchestrator:
                 ack_token = (payload.get("ack_token") or "").strip()  # client-generated one-time token
                 print(f"*****[ack] ack_url={ack_url!r}, ack_token={ack_token!r}, role={role}")
                 if ack_url and ack_url.startswith(("https://", "http://")):
+                    self.emit_event(
+                        component="orchestrator",
+                        stage="acknowledgement_send",
+                        status="started",
+                        message="Sending bootstrap acknowledgement to the new node",
+                        details={"ack_url": ack_url},
+                        from_signature=sig,
+                    )
                     ack = AcknowledgementSender(
                         registering_node_url=ack_url,
                         genesis_file=self.genesis_file_path,
@@ -1254,6 +1808,14 @@ class Orchestrator:
                         payload["node_id"],
                         node_type=role
                         # auth_token=ack_token
+                    )
+                    self.emit_event(
+                        component="orchestrator",
+                        stage="acknowledgement_send",
+                        status="ok" if ack_sent else "error",
+                        message="Bootstrap acknowledgement completed" if ack_sent else "Bootstrap acknowledgement failed",
+                        details={"ack_url": ack_url},
+                        from_signature=sig,
                     )
                 elif not os.getenv("REAL_INTERACT"):
                     ack_sent = True
@@ -1275,15 +1837,47 @@ class Orchestrator:
                 return {"ok": True, "status": "validator_already_included", "ack_sent": ack_sent, "tx": tx_out}
             else:
                 # 1) brief, bounded wait for the node to actually join peers after ACK
+                self.emit_event(
+                    component="validator_listener",
+                    stage="peer_wait",
+                    status="waiting",
+                    message="Waiting for the candidate validator node to join peers",
+                    details={"address": payload.get("address")},
+                    from_signature=sig,
+                )
                 self._wait_for_peer_bump(max_wait_sec=90, step=5)
 
                 # 2) if still not a validator, propose + vote (quorum attempt)
                 cur = self._normalize_validators(self.qbft_get_validators())
                 if new_addr_lc and new_addr_lc not in cur:
                     self.start_validator_listener()
+                    self.emit_event(
+                        component="validator_listener",
+                        stage="validator_proposal",
+                        status="started",
+                        message="Proposing the node as a validator",
+                        details={"address": payload.get("address")},
+                        from_signature=sig,
+                    )
                     proposed = self.propose_validator(payload["address"]) is not None
                     # auto-vote yes (idempotent, guarded)
+                    self.emit_event(
+                        component="validator_listener",
+                        stage="validator_vote",
+                        status="started",
+                        message="Submitting validator vote",
+                        details={"address": payload.get("address")},
+                        from_signature=sig,
+                    )
                     voted = self._propose_and_vote(payload["address"]) or proposed
+                    self.emit_event(
+                        component="validator_listener",
+                        stage="validator_vote",
+                        status="ok" if voted else "error",
+                        message="Validator vote completed" if voted else "Validator vote failed",
+                        details={"address": payload.get("address")},
+                        from_signature=sig,
+                    )
 
                     # 3) exponential backoff poll for inclusion (bounded, fast exit if included)
                     backoff = [3, 5, 8, 13]  # ~71s total; tweak as needed
@@ -1293,6 +1887,14 @@ class Orchestrator:
                         if new_addr_lc in cur:
                             included = True
                             break        
+            self.emit_event(
+                component="validator_listener",
+                stage="validator_inclusion_result",
+                status="ok" if included else ("waiting" if proposed else "skipped"),
+                message="Validator inclusion observed" if included else ("Validator proposal submitted and inclusion is pending" if proposed else "Validator flow skipped"),
+                details={"address": payload.get("address")},
+                from_signature=sig,
+            )
         # --- Final status synthesis ---
         status = (
             "validator_included" if included else
@@ -1314,14 +1916,40 @@ class Orchestrator:
         - One policy per resource key: ctxSchema = "api:METHOD:/path".
         - If msig is ON, ensure_policy() may return "pending_msig".
         """
+        if not self.current_flow_id():
+            self.start_flow(
+                "access",
+                stage="request_received",
+                message="Access request received",
+                component="orchestrator",
+                details={"method": http_method, "resource_path": resource_path},
+                from_signature=from_sig,
+                to_signature=to_sig,
+            )
         if not self.check_if_deployed():
             return {"ok": False, "why": "contract_not_deployed"}
 
         # Check registration first
+        self.emit_event(
+            component="orchestrator",
+            stage="registration_validation",
+            status="started",
+            message="Checking whether both nodes are registered",
+            from_signature=from_sig,
+            to_signature=to_sig,
+        )
         if not self.is_node_registered(from_sig):
             return {"ok": False, "why": "from_not_registered"}
         if not self.is_node_registered(to_sig):
             return {"ok": False, "why": "to_not_registered"}
+        self.emit_event(
+            component="orchestrator",
+            stage="registration_validation",
+            status="ok",
+            message="Both nodes are registered",
+            from_signature=from_sig,
+            to_signature=to_sig,
+        )
         
         print(f"access_flow: from={from_sig}, to={to_sig}, method={http_method}, path={resource_path}, expiry_secs={expiry_secs}, allow_delegation={allow_delegation}, delegation_depth={delegation_depth}")
         # Resolve roles
@@ -1329,6 +1957,15 @@ class Orchestrator:
         to_details   = self.get_node_by_sig(to_sig)
         from_role    = self._role_name(from_details["nodeType"])
         to_role      = self._role_name(to_details["nodeType"])
+        self.emit_event(
+            component="orchestrator",
+            stage="role_resolution",
+            status="ok",
+            message="Resolved node roles for access control",
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"from_role": from_role, "to_role": to_role},
+        )
 
         # Decide op for the HTTP method
         op = METHOD_TO_OP.get((http_method or "").upper())
@@ -1337,6 +1974,15 @@ class Orchestrator:
 
         # Create/find the resource-scoped policy
         ctx = _canon_resource_key(http_method, resource_path)
+        self.emit_event(
+            component="orchestrator",
+            stage="resource_context",
+            status="ok",
+            message="Derived resource context for the request",
+            from_signature=from_sig,
+            to_signature=to_sig,
+            details={"method": http_method, "resource_path": resource_path, "ctx": ctx, "op": op},
+        )
         ensure = self.ensure_policy(from_role, to_role, op, ctx, create_if_missing=True)
 
         if ensure["status"] in {"missing","error"}:
@@ -1351,9 +1997,37 @@ class Orchestrator:
 
         try:
             print(f"access_flow: checking grant for {from_sig} -> {to_sig} with policyId={policy_id} and op={op}")
+            self.emit_event(
+                component="orchestrator",
+                stage="grant_lookup",
+                status="started",
+                message="Looking up the current grant",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+            )
             gx = self.get_grant_ex(from_sig, to_sig, policy_id)
+            self.emit_event(
+                component="orchestrator",
+                stage="grant_lookup",
+                status="ok",
+                message="Grant lookup completed",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+                details={"issued": bool(gx.get("isIssued")), "revoked": bool(gx.get("isRevoked"))},
+            )
         except Exception:
             gx = None
+            self.emit_event(
+                component="orchestrator",
+                stage="grant_lookup",
+                status="skipped",
+                message="No reusable grant was available",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+            )
 
         now = _now()
         exp_at = now + int(expiry_secs)
@@ -1365,7 +2039,15 @@ class Orchestrator:
         #     return {"ok": False, "why": "owner_signer_not_found", "owner": to_owner_addr}
 
         if gx and gx.get("isIssued") and not gx.get("isRevoked") and gx.get("expiresAt", 0) > now:
-            pass
+            self.emit_event(
+                component="orchestrator",
+                stage="grant_issue_or_reuse",
+                status="reused",
+                message="Reusing an existing valid grant",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+            )
         else:
             if allow_delegation and delegation_depth > 0:
                 self.issue_grant_delegable(
@@ -1375,6 +2057,16 @@ class Orchestrator:
                 self.issue_grant(
                     from_sig, to_sig, policy_id, op, exp_at
                 )
+            self.emit_event(
+                component="orchestrator",
+                stage="grant_issue_or_reuse",
+                status="ok",
+                message="Issued a fresh grant for the request",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+                details={"delegable": bool(allow_delegation and delegation_depth > 0)},
+            )
 
         # Final decision
         granted = self.check_grant(from_sig, to_sig, policy_id, op)
@@ -1389,7 +2081,43 @@ class Orchestrator:
         Performs a delegation hop: (parent_from_sig -> to_sig) delegates to (child_from_sig -> to_sig).
         Precondition: parent grant must be delegable with depth>0 and include ops_csv; child expiry must be shorter.
         """
+        if not self.current_flow_id():
+            self.start_flow(
+                "delegation",
+                stage="request_received",
+                message="Delegation request received",
+                component="orchestrator",
+                details={"ops": ops_csv, "child_expiry_secs": child_expiry_secs},
+                from_signature=parent_from_sig,
+                to_signature=to_sig,
+            )
+        self.emit_event(
+            component="orchestrator",
+            stage="parent_grant_fetch",
+            status="started",
+            message="Fetching the parent grant for delegation",
+            from_signature=parent_from_sig,
+            to_signature=to_sig,
+            details={"child_from_signature": child_from_sig, "ops": ops_csv},
+        )
         parent = self.get_grant_ex_any(parent_from_sig, to_sig, policy_id=policy_id)
+        self.emit_event(
+            component="orchestrator",
+            stage="parent_grant_fetch",
+            status="ok",
+            message="Parent grant loaded",
+            from_signature=parent_from_sig,
+            to_signature=to_sig,
+            policy_id=int(parent.get("policyId", 0) or 0) or None,
+        )
+        self.emit_event(
+            component="orchestrator",
+            stage="delegation_preconditions",
+            status="started",
+            message="Checking delegation preconditions",
+            from_signature=parent_from_sig,
+            to_signature=to_sig,
+        )
         if not parent.get("delegationAllowed"):
             return {"ok": False, "why": "delegation_not_allowed"}
         if int(parent.get("delegationDepth", 0)) <= 0:
@@ -1404,6 +2132,15 @@ class Orchestrator:
         child_exp_at = min(parent_exp - 1, now + int(child_expiry_secs))
         if child_exp_at <= now:
             return {"ok": False, "why": "invalid_child_expiry"}
+        self.emit_event(
+            component="orchestrator",
+            stage="delegation_preconditions",
+            status="ok",
+            message="Delegation preconditions satisfied",
+            from_signature=parent_from_sig,
+            to_signature=to_sig,
+            details={"child_expiry_at": child_exp_at},
+        )
 
         # Attempt delegation
         try:
@@ -1418,7 +2155,26 @@ class Orchestrator:
             primary_op = _ops_csv(ops_csv).split(",")[0]
             # Use the parent's policyId for the child (delegation keeps same policy)
             pid = int(parent.get("policyId", 0) or 0)
+            self.emit_event(
+                component="orchestrator",
+                stage="delegated_grant_verification",
+                status="started",
+                message="Verifying the delegated grant",
+                policy_id=pid,
+                from_signature=child_from_sig,
+                to_signature=to_sig,
+            )
             granted = self.check_grant(child_from_sig, to_sig, pid, primary_op)
+            self.emit_event(
+                component="orchestrator",
+                stage="delegated_grant_verification",
+                status="ok" if granted else "denied",
+                message="Delegated grant verification completed",
+                policy_id=pid,
+                from_signature=child_from_sig,
+                to_signature=to_sig,
+                details={"granted": granted},
+            )
         except Exception:
             granted = False
 

@@ -7,7 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tef_metrics import LatencyRecorder, TokenBucketRateLimiter, ensure_results_dir, find_repo_root
+from tef_metrics import (
+    LatencyRecorder,
+    ProcessEventRecorder,
+    TokenBucketRateLimiter,
+    ensure_results_dir,
+    find_repo_root,
+)
 
 
 def test_find_repo_root_walks_up_to_git_dir(tmp_path):
@@ -73,3 +79,55 @@ def test_token_bucket_rate_limiter_enforces_retry_and_refill():
     allowed, retry_after_ms = limiter.allow("sig-2", "unknown-role", now=1.0)
     assert allowed is True
     assert retry_after_ms == 0
+
+
+def test_process_event_recorder_persists_and_summarizes_flows(tmp_path):
+    recorder = ProcessEventRecorder(tmp_path, node_id="FG-1", node_name="Fog", node_tier="fog", max_events=10)
+
+    started = recorder.emit(
+        component="api",
+        flow_type="access",
+        flow_id="flow-1",
+        stage="request_received",
+        status="started",
+        message="Access request received",
+    )
+    finished = recorder.emit(
+        component="orchestrator",
+        flow_type="access",
+        flow_id="flow-1",
+        stage="access_finished",
+        status="ok",
+        message="Access granted",
+        duration_ms=12.5,
+    )
+
+    assert started["sequence"] == 1
+    assert finished["sequence"] == 2
+    assert recorder.latest_sequence() == 2
+    assert recorder.recent(limit=5)[-1]["message"] == "Access granted"
+    assert recorder.active_flows() == []
+    flows = recorder.flows(limit=5)
+    assert flows[0]["flow_id"] == "flow-1"
+    assert flows[0]["final_status"] == "ok"
+    assert flows[0]["duration_ms"] is not None
+    stats = recorder.stats()
+    assert stats["status_counts"]["ok"] == 1
+    lines = (tmp_path / "process_events.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
+
+
+def test_process_event_recorder_wait_for_events_returns_new_items(tmp_path):
+    recorder = ProcessEventRecorder(tmp_path)
+    recorder.emit(
+        component="api",
+        flow_type="registration",
+        flow_id="flow-2",
+        stage="request_received",
+        status="started",
+        message="Registration request received",
+    )
+
+    fresh = recorder.wait_for_events(after_sequence=0, timeout=0.1)
+    assert len(fresh) == 1
+    assert fresh[0]["flow_type"] == "registration"

@@ -33,12 +33,18 @@ class FakeOrchestrator:
         self.repo_root = repo_root
         self.enforce_signature = enforce_signature
         self.local_node_tier = cfg.get("local_node_tier", "fog")
+        self.local_node_id = cfg.get("local_node_id", "FG-1")
+        self.local_node_name = cfg.get("local_node_name", "FogOne")
+        self.besu_rpc_url = cfg.get("besu_rpc_url", "http://rpc:8545")
         self.latency_recorder = DummyLatencyRecorder(
             cfg["latency_output_path"],
             cfg.get("latency_summary", {"registerNode|fog|cold": {"count": 1}}),
         )
         self.begin_calls = []
         self.end_calls = 0
+        self.request_id = None
+        self.current_flow = None
+        self.events = []
         self.access_calls = []
         self.delegate_calls = []
         self.revoke_calls = []
@@ -78,10 +84,13 @@ class FakeOrchestrator:
         cls.last_instance = None
 
     def begin_request(self, node_tier=None, condition=None):
+        self.request_id = "req-test"
         self.begin_calls.append({"node_tier": node_tier, "condition": condition})
 
     def end_request(self):
         self.end_calls += 1
+        self.request_id = None
+        self.current_flow = None
 
     def check_if_deployed(self):
         return type(self).config["deployed"]
@@ -97,6 +106,100 @@ class FakeOrchestrator:
 
     def latency_summary(self):
         return type(self).config["latency_summary"]
+
+    def start_flow(self, flow_type, *, stage, message, component="api", details=None, set_current=True, flow_id=None, **kwargs):
+        self.current_flow = flow_id or f"{flow_type}-1"
+        self.emit_event(
+            component=component,
+            flow_type=flow_type,
+            flow_id=self.current_flow,
+            stage=stage,
+            status="started",
+            message=message,
+            details=details,
+            **kwargs,
+        )
+        return self.current_flow
+
+    def emit_event(self, *, component, stage, status, message, flow_type=None, flow_id=None, details=None, **kwargs):
+        event = {
+            "sequence": len(self.events) + 1,
+            "event_id": f"evt-{len(self.events) + 1}",
+            "ts_unix_ms": 1_700_000_000_000 + len(self.events),
+            "node_id": self.local_node_id,
+            "node_name": self.local_node_name,
+            "node_tier": self.local_node_tier,
+            "component": component,
+            "flow_type": flow_type or "daemon",
+            "flow_id": flow_id or self.current_flow or "flow-unknown",
+            "stage": stage,
+            "status": status,
+            "message": message,
+            "details": details or {},
+            "duration_ms": kwargs.get("duration_ms"),
+            "request_id": self.request_id,
+            "tx_hash": kwargs.get("tx_hash"),
+            "policy_id": kwargs.get("policy_id"),
+            "from_signature": kwargs.get("from_signature"),
+            "to_signature": kwargs.get("to_signature"),
+        }
+        self.events.append(event)
+        return event
+
+    def finish_flow(self, status, *, stage, message, details=None, component="orchestrator", flow_id=None, flow_type=None, **kwargs):
+        return self.emit_event(
+            component=component,
+            stage=stage,
+            status=status,
+            message=message,
+            details=details,
+            flow_id=flow_id or self.current_flow,
+            flow_type=flow_type or "access",
+            **kwargs,
+        )
+
+    def recent_events(self, limit=100):
+        return self.events[-limit:]
+
+    def flow_summaries(self, limit=50):
+        grouped = {}
+        for event in self.events:
+            grouped.setdefault(event["flow_id"], []).append(event)
+        rows = []
+        for flow_id, events in grouped.items():
+            rows.append({
+                "flow_id": flow_id,
+                "flow_type": events[0]["flow_type"],
+                "node_tier": events[0]["node_tier"],
+                "started_at_ms": events[0]["ts_unix_ms"],
+                "duration_ms": events[-1]["ts_unix_ms"] - events[0]["ts_unix_ms"],
+                "final_status": events[-1]["status"],
+                "last_stage": events[-1]["stage"],
+                "message": events[-1]["message"],
+                "events": events,
+            })
+        return rows[:limit]
+
+    def active_flow_summaries(self):
+        return []
+
+    def event_stats(self):
+        status_counts = {}
+        flow_type_counts = {}
+        for event in self.events:
+            status_counts[event["status"]] = status_counts.get(event["status"], 0) + 1
+            flow_type_counts[event["flow_type"]] = flow_type_counts.get(event["flow_type"], 0) + 1
+        return {
+            "total_events": len(self.events),
+            "status_counts": status_counts,
+            "flow_type_counts": flow_type_counts,
+            "stage_counts": {},
+            "node_tier_counts": {self.local_node_tier: len(self.events)},
+            "top_reasons": [],
+        }
+
+    def wait_for_events(self, after_sequence=0, timeout=2.0):
+        return [event for event in self.events if event["sequence"] > after_sequence]
 
     def is_node_id_taken(self, _node_id):
         return type(self).config["duplicate_node_id"]
@@ -347,3 +450,39 @@ def test_temperature_route_reuses_access_flow_helper(app):
     orch = FakeOrchestrator.last_instance
     assert orch.access_calls[0]["method"] == "GET"
     assert orch.access_calls[0]["resource_path"] == "/temperature"
+
+
+def test_dashboard_and_event_endpoints_return_live_data(app):
+    client = app.test_client()
+
+    client.post("/access", json={
+        "from_signature": "sig-edge",
+        "method": "GET",
+        "resource_path": "/temperature",
+    })
+
+    recent = client.get("/events/recent", query_string={"limit": 10})
+    flows = client.get("/events/flows", query_string={"limit": 10})
+    active = client.get("/events/active")
+    stats = client.get("/events/stats")
+    dashboard = client.get("/dashboard")
+    dashboard_data = client.get("/dashboard/data")
+    stream = client.get("/events/stream", query_string={"follow": 0, "after": 0})
+
+    assert recent.status_code == 200
+    assert len(recent.get_json()["events"]) >= 1
+    assert flows.status_code == 200
+    assert flows.get_json()["flows"][0]["flow_type"] == "access"
+    assert active.status_code == 200
+    assert active.get_json()["flows"] == []
+    assert stats.status_code == 200
+    assert stats.get_json()["stats"]["total_events"] >= 1
+    assert dashboard.status_code == 200
+    assert "BlockCap Live Process Visibility" in dashboard.get_data(as_text=True)
+    assert dashboard_data.status_code == 200
+    payload = dashboard_data.get_json()
+    assert payload["node"]["node_id"] == "FG-1"
+    assert payload["health"]["deployed"] is True
+    lines = [line for line in stream.get_data(as_text=True).splitlines() if line.strip()]
+    assert len(lines) >= 1
+    assert json.loads(lines[0])["flow_type"] == "access"

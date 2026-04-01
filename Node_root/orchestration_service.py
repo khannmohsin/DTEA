@@ -23,7 +23,7 @@ import base64
 import json
 
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request, stream_with_context
 from werkzeug.middleware.proxy_fix import ProxyFix
 from pathlib import Path
 # import orchestrator module you already have
@@ -86,6 +86,136 @@ def _local_signature_from_node_details(repo_root: str | None) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _int_arg(name: str, default: int) -> int:
+    raw = request.args.get(name, str(default))
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _dashboard_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BlockCap Node Dashboard</title>
+  <style>
+    :root { color-scheme: light; --bg:#f3f1ea; --panel:#fffdf7; --ink:#162124; --muted:#647274; --line:#d8d1c5; --ok:#1d7a43; --err:#ae2c2c; --wait:#b86a00; --start:#1f5fa8; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; color:var(--ink); background:linear-gradient(180deg,#efe9db 0%,#f7f4ec 100%); }
+    .wrap { max-width:1400px; margin:0 auto; padding:24px; }
+    .hero { display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 8px 30px rgba(32,32,24,0.06); }
+    h1,h2 { margin:0 0 10px; font-weight:700; }
+    h1 { font-size:28px; }
+    h2 { font-size:18px; }
+    .sub { color:var(--muted); font-size:14px; }
+    .grid { display:grid; grid-template-columns:1.1fr 1.4fr; gap:16px; }
+    .grid + .grid { margin-top:16px; }
+    .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+    .stat { border:1px solid var(--line); border-radius:14px; padding:12px; background:#fff; }
+    .stat b { display:block; font-size:20px; margin-top:6px; }
+    .list { display:flex; flex-direction:column; gap:10px; max-height:420px; overflow:auto; }
+    .event, .flow { border:1px solid var(--line); border-radius:14px; padding:12px; background:#fff; cursor:pointer; }
+    .event-head, .flow-head { display:flex; justify-content:space-between; gap:10px; align-items:center; font-size:13px; }
+    .msg { margin-top:6px; font-size:14px; }
+    .meta { color:var(--muted); font-size:12px; margin-top:6px; word-break:break-word; }
+    .badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }
+    .ok { background:var(--ok); } .error, .denied { background:var(--err); } .waiting { background:var(--wait); } .started, .reused, .skipped { background:var(--start); }
+    pre { white-space:pre-wrap; word-break:break-word; font-size:13px; margin:0; }
+    .detail-events { display:flex; flex-direction:column; gap:8px; max-height:460px; overflow:auto; }
+    @media (max-width: 960px) { .hero,.grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <section class="panel">
+        <h1>BlockCap Live Process Visibility</h1>
+        <div id="identity" class="sub">Loading node identity...</div>
+      </section>
+      <section class="panel">
+        <h2>Health</h2>
+        <div id="health" class="sub">Loading...</div>
+      </section>
+    </div>
+    <div class="grid">
+      <section class="panel"><h2>Active Flows</h2><div id="active" class="list"></div></section>
+      <section class="panel"><h2>Counters</h2><div id="stats" class="stats"></div></section>
+    </div>
+    <div class="grid">
+      <section class="panel"><h2>Recent Timeline</h2><div id="timeline" class="list"></div></section>
+      <section class="panel"><h2>Flow Detail</h2><div id="detail" class="detail-events sub">Select a flow to inspect it.</div></section>
+    </div>
+    <div class="grid">
+      <section class="panel"><h2>Recent Flows</h2><div id="flows" class="list"></div></section>
+      <section class="panel"><h2>Latency Summary</h2><div id="latency" class="list"></div></section>
+    </div>
+  </div>
+  <script>
+    const state = { flows: [] };
+    const esc = (v) => String(v ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const badge = (status) => `<span class="badge ${esc(status)}">${esc(status)}</span>`;
+    const ts = (ms) => new Date(ms).toLocaleTimeString();
+    function renderStats(stats) {
+      const items = [
+        ["Total Events", stats.total_events || 0],
+        ["Granted", (stats.status_counts || {}).ok || 0],
+        ["Denied", (stats.status_counts || {}).denied || 0],
+        ["Errors", (stats.status_counts || {}).error || 0],
+        ["Registrations", (stats.flow_type_counts || {}).registration || 0],
+        ["Delegations", (stats.flow_type_counts || {}).delegation || 0],
+        ["Revocations", (stats.flow_type_counts || {}).revocation || 0],
+        ["Validator", (stats.flow_type_counts || {}).validator || 0],
+      ];
+      document.getElementById("stats").innerHTML = items.map(([label, value]) => `<div class="stat"><span class="sub">${esc(label)}</span><b>${esc(value)}</b></div>`).join("");
+    }
+    function renderList(id, items, mapFn, emptyText) {
+      document.getElementById(id).innerHTML = items.length ? items.map(mapFn).join("") : `<div class="sub">${esc(emptyText)}</div>`;
+    }
+    function bindFlowClicks() {
+      document.querySelectorAll("[data-flow-id]").forEach(el => el.onclick = () => showFlow(el.dataset.flowId));
+    }
+    function renderTimeline(events) {
+      renderList("timeline", events, (event) => `<div class="event" data-flow-id="${esc(event.flow_id)}"><div class="event-head"><span>${esc(event.flow_type)} / ${esc(event.stage)}</span>${badge(event.status)}</div><div class="msg">${esc(event.message)}</div><div class="meta">${ts(event.ts_unix_ms)} | ${esc(event.node_tier)} | ${esc(event.component)} | ${esc(event.flow_id)}</div></div>`, "No events yet.");
+    }
+    function renderActive(flows) {
+      renderList("active", flows, (flow) => `<div class="flow" data-flow-id="${esc(flow.flow_id)}"><div class="flow-head"><span>${esc(flow.flow_type)} / ${esc(flow.last_stage)}</span>${badge(flow.last_status)}</div><div class="msg">${esc(flow.message)}</div><div class="meta">${ts(flow.started_at_ms)} | ${esc(flow.node_tier)} | ${esc(flow.flow_id)}</div></div>`, "No active flows.");
+    }
+    function renderFlows(flows) {
+      state.flows = flows;
+      renderList("flows", flows, (flow) => `<div class="flow" data-flow-id="${esc(flow.flow_id)}"><div class="flow-head"><span>${esc(flow.flow_type)} / ${esc(flow.last_stage)}</span>${badge(flow.final_status)}</div><div class="msg">${esc(flow.message)}</div><div class="meta">${ts(flow.started_at_ms)} | ${flow.duration_ms == null ? "running" : `${flow.duration_ms} ms`} | ${esc(flow.flow_id)}</div></div>`, "No completed flows yet.");
+    }
+    function renderLatency(summary) {
+      const rows = Object.values(summary || {});
+      renderList("latency", rows, (item) => `<div class="event"><div class="event-head"><span>${esc(item.operation)} / ${esc(item.condition)}</span><span class="sub">${esc(item.node_tier)}</span></div><div class="msg">mean ${esc(item.mean_ms)} ms, count ${esc(item.count)}</div><div class="meta">min ${esc(item.min_ms)} ms, max ${esc(item.max_ms)} ms, stddev ${esc(item.stddev_ms)} ms</div></div>`, "No latency samples yet.");
+    }
+    function showFlow(flowId) {
+      const flow = state.flows.find(item => item.flow_id === flowId);
+      if (!flow) { document.getElementById("detail").innerHTML = `<div class="sub">Flow details unavailable.</div>`; return; }
+      document.getElementById("detail").innerHTML = flow.events.map((event) => `<div class="event"><div class="event-head"><span>${esc(event.stage)}</span>${badge(event.status)}</div><div class="msg">${esc(event.message)}</div><div class="meta">${ts(event.ts_unix_ms)} | ${esc(event.component)} | ${event.duration_ms == null ? "" : `${event.duration_ms} ms`}</div><pre>${esc(JSON.stringify(event.details || {}, null, 2))}</pre></div>`).join("");
+    }
+    async function refresh() {
+      const response = await fetch("/dashboard/data");
+      const payload = await response.json();
+      document.getElementById("identity").textContent = `${payload.node.node_name || "Unnamed"} (${payload.node.node_tier}) | node_id=${payload.node.node_id || "-"} | rpc=${payload.node.rpc_url || "-"} | api=${payload.node.api_url || "-"}`;
+      document.getElementById("health").textContent = `deployed=${payload.health.deployed} | validator=${payload.health.is_validator} | validators=${payload.health.validators}`;
+      renderActive(payload.active_flows || []);
+      renderStats(payload.event_stats || {});
+      renderTimeline(payload.recent_events || []);
+      renderFlows(payload.recent_flows || []);
+      renderLatency(payload.latency_summary || {});
+      bindFlowClicks();
+    }
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>"""
 
 def make_app(repo_root: str | None = None) -> Flask:
     app = Flask(__name__)
@@ -150,21 +280,48 @@ def make_app(repo_root: str | None = None) -> Flask:
         print(f"[register] payload: {req}")
 
         if bad: return bad
+        flow_id = orch.start_flow(
+            "registration",
+            stage="request_received",
+            message="Registration request received",
+            component="api",
+            details={"node_id": req.get("node_id"), "node_type": req.get("node_type"), "rpc_url": req.get("rpcURL")},
+            from_signature=req.get("signature"),
+        )
 
         # --- Registration hardening preflight (soft-fail if orchestrator lacks helpers) ---
         try:
             # 1) duplicate nodeId check (HTTP 409)
             if hasattr(orch, "is_node_id_taken") and orch.is_node_id_taken(req.get("node_id", "")):
+                orch.finish_flow(
+                    "denied",
+                    stage="registration_finished",
+                    message="Registration denied because the node_id already exists",
+                    details={"node_id": req.get("node_id")},
+                    from_signature=req.get("signature"),
+                )
                 return err("duplicate_node_id", 409)
 
             # 2) duplicate node signature check (HTTP 409)
             if hasattr(orch, "is_node_registered") and orch.is_node_registered(req.get("signature", "")):
+                orch.finish_flow(
+                    "denied",
+                    stage="registration_finished",
+                    message="Registration denied because the signature is already registered",
+                    from_signature=req.get("signature"),
+                )
                 return err("Already Registered", 409)
 
             # 3) signature verification over canonical payload (HTTP 403)
             #    Expect orchestrator.verify_registration_sig(req) -> bool
             if hasattr(orch, "verify_registration_sig"):
                 if not orch.verify_registration_sig(req):
+                    orch.finish_flow(
+                        "error",
+                        stage="registration_finished",
+                        message="Registration denied because signature verification failed",
+                        from_signature=req.get("signature"),
+                    )
                     return err("bad_registration_sig", 403)
         except Exception as _pre_e:
             # Do not crash on preflight; log and continue to on-chain checks
@@ -192,12 +349,28 @@ def make_app(repo_root: str | None = None) -> Flask:
                 # Don’t fail registration just because the listener start logic hiccupped.
                 print(f"[listener] post-register start logic error: {_e}")
             # normalize response for clients
+            orch.finish_flow(
+                "ok",
+                stage="registration_finished",
+                message=f"Registration flow completed with status {out.get('status')}",
+                details={"status": out.get("status"), "ack_sent": out.get("ack_sent", False)},
+                tx_hash=out.get("tx"),
+                from_signature=req.get("signature"),
+            )
             return ok({
                 "status": out.get("status"),
                 "ack_sent": out.get("ack_sent", False),
                 "tx": out.get("tx"),
+                "flow_id": flow_id,
             })
         except Exception as e:
+            orch.finish_flow(
+                "error",
+                stage="registration_finished",
+                message="Registration flow failed",
+                details={"detail": str(e)},
+                from_signature=req.get("signature"),
+            )
             return err("registration_failed", 500, detail=str(e), trace=traceback.format_exc())
 
     @app.get("/node/<signature>")
@@ -229,6 +402,78 @@ def make_app(repo_root: str | None = None) -> Flask:
             return ok({"summary": orch.latency_summary(), "output": str(output_path)})
         except Exception as e:
             return err("latency_metrics_failed", 500, detail=str(e))
+
+    @app.get("/events/recent")
+    def recent_events():
+        limit = max(1, min(_int_arg("limit", 100), 500))
+        return ok({"events": orch.recent_events(limit=limit)})
+
+    @app.get("/events/flows")
+    def event_flows():
+        limit = max(1, min(_int_arg("limit", 50), 200))
+        return ok({"flows": orch.flow_summaries(limit=limit)})
+
+    @app.get("/events/active")
+    def active_flows():
+        return ok({"flows": orch.active_flow_summaries()})
+
+    @app.get("/events/stats")
+    def event_stats():
+        return ok({"stats": orch.event_stats()})
+
+    @app.get("/events/stream")
+    def stream_events():
+        follow = request.args.get("follow", "1") != "0"
+        after = _int_arg("after", 0)
+        limit = max(1, min(_int_arg("limit", 100), 500))
+
+        def generate():
+            events = [event for event in orch.recent_events(limit=limit) if int(event.get("sequence", 0)) > after]
+            current = after
+            for event in events:
+                current = max(current, int(event.get("sequence", 0)))
+                yield json.dumps(event, sort_keys=True) + "\n"
+            if not follow:
+                return
+            while True:
+                fresh = orch.wait_for_events(after_sequence=current, timeout=2.0)
+                if not fresh:
+                    continue
+                for event in fresh:
+                    current = max(current, int(event.get("sequence", 0)))
+                    yield json.dumps(event, sort_keys=True) + "\n"
+
+        return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
+
+    @app.get("/dashboard")
+    def dashboard():
+        return Response(_dashboard_html(), mimetype="text/html")
+
+    @app.get("/dashboard/data")
+    def dashboard_data():
+        try:
+            health_payload = {
+                "deployed": orch.check_if_deployed(),
+                "validators": orch.qbft_get_validators(),
+                "is_validator": orch.is_validator(),
+            }
+        except Exception as exc:
+            health_payload = {"deployed": False, "validators": "", "is_validator": False, "detail": str(exc)}
+        return ok({
+            "node": {
+                "node_id": orch.local_node_id,
+                "node_name": orch.local_node_name,
+                "node_tier": orch.local_node_tier,
+                "rpc_url": orch.besu_rpc_url,
+                "api_url": request.host_url.rstrip("/"),
+            },
+            "health": health_payload,
+            "active_flows": orch.active_flow_summaries(),
+            "recent_events": orch.recent_events(limit=100),
+            "recent_flows": orch.flow_summaries(limit=50),
+            "event_stats": orch.event_stats(),
+            "latency_summary": orch.latency_summary(),
+        })
 
     @app.post("/acknowledgement")
     def acknowledgement():
@@ -284,14 +529,53 @@ def make_app(repo_root: str | None = None) -> Flask:
         """
         req, bad = require_json(["from_signature", "method", "resource_path"])
         if bad: return bad
+        flow_id = orch.start_flow(
+            "access",
+            stage="request_received",
+            message="Access request received",
+            component="api",
+            details={"method": req.get("method"), "resource_path": req.get("resource_path")},
+            from_signature=req.get("from_signature"),
+        )
         
         to_sig = req.get("to_signature") or local_sig
         if not to_sig:
+            orch.finish_flow(
+                "error",
+                stage="access_finished",
+                message="Access request failed because to_signature could not be resolved",
+                from_signature=req.get("from_signature"),
+            )
             return err("to_signature missing and local node signature not found", 422)
 
+        orch.emit_event(
+            component="rate_limiter",
+            stage="rate_limit_check",
+            status="started",
+            message="Evaluating per-object rate limit",
+            from_signature=req.get("from_signature"),
+            to_signature=to_sig,
+        )
         allowed, retry_after_ms = rate_limiter.allow(to_sig, orch.local_node_tier)
         if not allowed:
+            orch.finish_flow(
+                "denied",
+                stage="rate_limit_check",
+                message="Access request was rate limited",
+                component="rate_limiter",
+                details={"retry_after_ms": retry_after_ms},
+                from_signature=req.get("from_signature"),
+                to_signature=to_sig,
+            )
             return err("rate_limit_exceeded", 429, reason="rate_limit_exceeded", retry_after_ms=retry_after_ms)
+        orch.emit_event(
+            component="rate_limiter",
+            stage="rate_limit_check",
+            status="ok",
+            message="Rate limit check passed",
+            from_signature=req.get("from_signature"),
+            to_signature=to_sig,
+        )
         
         try:
             result = orch.access_flow(
@@ -305,9 +589,34 @@ def make_app(repo_root: str | None = None) -> Flask:
             print("yoar taaam chu waatnaavun")
             if not result.get("ok"):
                 # bubble up reason
+                orch.finish_flow(
+                    "denied",
+                    stage="access_finished",
+                    message=result.get("why", "access_denied"),
+                    details={k: v for k, v in result.items() if k != "ok"},
+                    from_signature=req.get("from_signature"),
+                    to_signature=to_sig,
+                )
                 return err(result.get("why", "access_denied"), 403, **{k:v for k,v in result.items() if k not in {"ok"}})
-            return ok(result)
+            orch.finish_flow(
+                "ok" if result.get("granted") else "denied",
+                stage="access_finished",
+                message="Access granted" if result.get("granted") else "Access denied by grant check",
+                details={"granted": result.get("granted"), "policy_id": result.get("policyId"), "ctx": result.get("ctx")},
+                policy_id=result.get("policyId"),
+                from_signature=req.get("from_signature"),
+                to_signature=to_sig,
+            )
+            return ok({**result, "flow_id": flow_id})
         except Exception as e:
+            orch.finish_flow(
+                "error",
+                stage="access_finished",
+                message="Access flow failed",
+                details={"detail": str(e)},
+                from_signature=req.get("from_signature"),
+                to_signature=to_sig,
+            )
             return err("access_flow_failed", 500, detail=str(e), trace=traceback.format_exc())
 
     @app.post("/delegate")
@@ -326,6 +635,15 @@ def make_app(repo_root: str | None = None) -> Flask:
 
         req, bad = require_json(["parent_from_sig", "to_sig", "child_from_sig", "ops_csv"])
         if bad: return bad
+        flow_id = orch.start_flow(
+            "delegation",
+            stage="request_received",
+            message="Delegation request received",
+            component="api",
+            details={"ops_csv": req.get("ops_csv")},
+            from_signature=req.get("parent_from_sig"),
+            to_signature=req.get("to_sig"),
+        )
 
         try:
             res = orch.delegate_flow(
@@ -334,9 +652,34 @@ def make_app(repo_root: str | None = None) -> Flask:
                 int(req["policy_id"]) if req.get("policy_id") is not None else None
             )
             if not res.get("ok"):
+                orch.finish_flow(
+                    "denied",
+                    stage="delegation_finished",
+                    message=res.get("why", "delegate_failed"),
+                    details={k: v for k, v in res.items() if k != "ok"},
+                    from_signature=req.get("parent_from_sig"),
+                    to_signature=req.get("to_sig"),
+                )
                 return err(res.get("why", "delegate_failed"), 400, **{k:v for k,v in res.items() if k not in {"ok"}})
-            return ok(res)
+            orch.finish_flow(
+                "ok" if res.get("granted", True) else "denied",
+                stage="delegation_finished",
+                message="Delegation flow completed",
+                details={"granted": res.get("granted", False)},
+                tx_hash=res.get("tx"),
+                from_signature=req.get("child_from_sig"),
+                to_signature=req.get("to_sig"),
+            )
+            return ok({**res, "flow_id": flow_id})
         except Exception as e:
+            orch.finish_flow(
+                "error",
+                stage="delegation_finished",
+                message="Delegation flow failed",
+                details={"detail": str(e)},
+                from_signature=req.get("parent_from_sig"),
+                to_signature=req.get("to_sig"),
+            )
             return err("delegate_flow_failed", 500, detail=str(e), trace=traceback.format_exc())
 
     @app.post("/revoke-grant")
@@ -344,9 +687,25 @@ def make_app(repo_root: str | None = None) -> Flask:
     def revoke_grant():
         req, bad = require_json(["from_signature", "to_signature"])
         if bad: return bad
+        flow_id = orch.start_flow(
+            "revocation",
+            stage="request_received",
+            message="Revocation request received",
+            component="api",
+            from_signature=req.get("from_signature"),
+            to_signature=req.get("to_signature"),
+        )
         try:
             policy_id = req.get("policy_id")
             if policy_id is None:
+                orch.emit_event(
+                    component="orchestrator",
+                    stage="revocation_resolution",
+                    status="started",
+                    message="Resolving the policy_id for revocation",
+                    from_signature=req.get("from_signature"),
+                    to_signature=req.get("to_signature"),
+                )
                 if req.get("ctx") or (req.get("method") and req.get("resource_path")):
                     grant = orch.get_grant_ex_auto(
                         req["from_signature"],
@@ -357,10 +716,34 @@ def make_app(repo_root: str | None = None) -> Flask:
                     )
                     policy_id = grant.get("policyId")
             if policy_id is None:
+                orch.finish_flow(
+                    "error",
+                    stage="revocation_finished",
+                    message="Revocation failed because policy_id could not be resolved",
+                    from_signature=req.get("from_signature"),
+                    to_signature=req.get("to_signature"),
+                )
                 return err("missing policy_id", 422)
             tx = orch.revoke_grant(req["from_signature"], req["to_signature"], int(policy_id))
-            return ok({"tx": tx})
+            orch.finish_flow(
+                "ok",
+                stage="revocation_finished",
+                message="Revocation flow completed",
+                policy_id=int(policy_id),
+                tx_hash=tx,
+                from_signature=req.get("from_signature"),
+                to_signature=req.get("to_signature"),
+            )
+            return ok({"tx": tx, "flow_id": flow_id})
         except Exception as e:
+            orch.finish_flow(
+                "error",
+                stage="revocation_finished",
+                message="Revocation flow failed",
+                details={"detail": str(e)},
+                from_signature=req.get("from_signature"),
+                to_signature=req.get("to_signature"),
+            )
             return err("revoke_failed", 500, detail=str(e))
 
     @app.get("/grant")
