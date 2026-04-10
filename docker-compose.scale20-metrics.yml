@@ -1,0 +1,425 @@
+services:
+  cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: cloud
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-changeme}"
+      FLASK_PORT: 5600
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "cloud-data:/app/Node_root/data"
+      - "cloud-genesis:/app/Node_root/genesis"
+    ports:
+      - "5600:5600"
+      - "8545:8545"
+      - "30303:30303"
+    deploy:
+      resources:
+        limits:
+          cpus: 4.0
+          memory: 2g
+  fog1:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: fog
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: jetson-orin-nano-8gb
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "fog1-data:/app/Node_root/data"
+      - "fog1-genesis:/app/Node_root/genesis"
+    ports:
+      - "5601:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.5
+          memory: 512m
+  fog2:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: fog
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: jetson-orin-nano-8gb
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "fog2-data:/app/Node_root/data"
+      - "fog2-genesis:/app/Node_root/genesis"
+    ports:
+      - "5602:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.5
+          memory: 512m
+  fog3:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: fog
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: jetson-orin-nano-8gb
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "fog3-data:/app/Node_root/data"
+      - "fog3-genesis:/app/Node_root/genesis"
+    ports:
+      - "5603:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.5
+          memory: 512m
+  edge1:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: edge
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-5-8gb-edge
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "edge1-data:/app/Node_root/data"
+      - "edge1-genesis:/app/Node_root/genesis"
+    ports:
+      - "5604:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.0
+          memory: 256m
+  edge2:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: edge
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-5-8gb-edge
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "edge2-data:/app/Node_root/data"
+      - "edge2-genesis:/app/Node_root/genesis"
+    ports:
+      - "5605:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.0
+          memory: 256m
+  edge3:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: edge
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-5-8gb-edge
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "edge3-data:/app/Node_root/data"
+      - "edge3-genesis:/app/Node_root/genesis"
+    ports:
+      - "5606:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.0
+          memory: 256m
+  edge4:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: edge
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: ""
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-5-8gb-edge
+      SCENARIO_NAME: scale20-metrics
+    volumes:
+      - "edge4-data:/app/Node_root/data"
+      - "edge4-genesis:/app/Node_root/genesis"
+    ports:
+      - "5607:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 1.0
+          memory: 256m
+  endpoint1:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint1-data:/app/Node_root/data"
+    ports:
+      - "5608:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint2:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint2-data:/app/Node_root/data"
+    ports:
+      - "5609:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint3:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint3-data:/app/Node_root/data"
+    ports:
+      - "5610:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint4:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint4-data:/app/Node_root/data"
+    ports:
+      - "5611:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint5:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint5-data:/app/Node_root/data"
+    ports:
+      - "5612:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint6:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint6-data:/app/Node_root/data"
+    ports:
+      - "5613:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint7:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint7-data:/app/Node_root/data"
+    ports:
+      - "5614:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint8:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint8-data:/app/Node_root/data"
+    ports:
+      - "5615:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint9:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint9-data:/app/Node_root/data"
+    ports:
+      - "5616:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+  endpoint10:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: "http://cloud:5600"
+      PARENT_URL: "http://fog1:5600"
+      FLASK_PORT: 5600
+      SIMULATED_DEVICE_ID: raspberry-pi-zero-2-w
+      SCENARIO_NAME: scale20-metrics
+      ENDPOINT_ROLE: Sensor
+    volumes:
+      - "endpoint10-data:/app/Node_root/data"
+    ports:
+      - "5617:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 128m
+volumes:
+  cloud-data:
+  cloud-genesis:
+  fog1-genesis:
+  fog1-data:
+  fog2-genesis:
+  fog2-data:
+  fog3-genesis:
+  fog3-data:
+  edge1-genesis:
+  edge1-data:
+  edge2-genesis:
+  edge2-data:
+  edge3-genesis:
+  edge3-data:
+  edge4-genesis:
+  edge4-data:
+  endpoint1-data:
+  endpoint2-data:
+  endpoint3-data:
+  endpoint4-data:
+  endpoint5-data:
+  endpoint6-data:
+  endpoint7-data:
+  endpoint8-data:
+  endpoint9-data:
+  endpoint10-data:

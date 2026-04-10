@@ -1,0 +1,11 @@
+{
+  "policies": [
+    {"from_role": "Fog",      "to_role": "Edge",     "ops": "GET",  "resource": "/temperature"},
+    {"from_role": "Fog",      "to_role": "Edge",     "ops": "POST", "resource": "/alerts"},
+    {"from_role": "Edge",     "to_role": "Sensor",   "ops": "GET",  "resource": "/sensors"},
+    {"from_role": "Edge",     "to_role": "Actuator", "ops": "POST", "resource": "/control"},
+    {"from_role": "Cloud",    "to_role": "Fog",      "ops": "GET",  "resource": "/metrics"},
+    {"from_role": "Cloud",    "to_role": "Fog",      "ops": "POST", "resource": "/firmware"},
+    {"from_role": "Edge",     "to_role": "Endpoint", "ops": "GET",  "resource": "/invalid-endpoint-check"}
+  ]
+}

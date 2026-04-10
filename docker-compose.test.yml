@@ -1,0 +1,170 @@
+version: "3.9"
+
+networks:
+  blockcap-test:
+    driver: bridge
+
+services:
+  root:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blockcap-node:test
+    container_name: blockcap-root
+    environment:
+      NODE_ROLE: cloud
+      FLASK_PORT: "5600"
+      ROOT_BESU_RPC_PORT: "8545"
+      ROOT_BESU_P2P_PORT: "30303"
+      ROOT_BESU_METRICS_PORT: "9545"
+      REAL_INTERACT: "1"
+    ports:
+      - "5600:5600"
+      - "8545:8545"
+      - "30303:30303"
+    volumes:
+      - root-data:/app/Node_root/data
+      - root-genesis:/app/Node_root/genesis
+    networks:
+      - blockcap-test
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5600/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  fog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blockcap-node:test
+    container_name: blockcap-fog
+    environment:
+      NODE_ROLE: fog
+      ROOT_URL: http://root:5600
+      REGISTRATION_URL: http://root:5600
+      BESU_RPC_URL: http://localhost:8545
+      FLASK_PORT: "5600"
+      REAL_INTERACT: "1"
+    ports:
+      - "5601:5600"
+      - "8546:8545"
+    volumes:
+      - fog-data:/app/Node_root/data
+      - fog-genesis:/app/Node_root/genesis
+    networks:
+      - blockcap-test
+    depends_on:
+      root:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5600/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  edge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blockcap-node:test
+    container_name: blockcap-edge
+    environment:
+      NODE_ROLE: edge
+      ROOT_URL: http://root:5600
+      REGISTRATION_URL: http://fog:5600
+      PARENT_URL: http://fog:5600
+      BESU_RPC_URL: http://localhost:8545
+      FLASK_PORT: "5600"
+      REAL_INTERACT: "1"
+    ports:
+      - "5602:5600"
+      - "8547:8545"
+    volumes:
+      - edge-data:/app/Node_root/data
+      - edge-genesis:/app/Node_root/genesis
+    networks:
+      - blockcap-test
+    depends_on:
+      fog:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5600/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+  sensor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blockcap-node:test
+    container_name: blockcap-sensor
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: http://root:5600
+      REGISTRATION_URL: http://edge:5600
+      PARENT_URL: http://edge:5600
+      FLASK_PORT: "5600"
+      REAL_INTERACT: "1"
+    ports:
+      - "5603:5600"
+    volumes:
+      - sensor-data:/app/Node_root/data
+    networks:
+      - blockcap-test
+    depends_on:
+      edge:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5600/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    hostname: test-runner
+    environment:
+      ROOT_URL: http://root:5600
+      FOG_URL: http://fog:5600
+      EDGE_URL: http://edge:5600
+      SENSOR_URL: http://sensor:5600
+      ROOT_RPC: http://root:8545
+      FOG_RPC: http://fog:8545
+      EDGE_RPC: http://edge:8545
+      FOG_DATA_DIR: /fixtures/fog-data
+      EDGE_DATA_DIR: /fixtures/edge-data
+      SENSOR_DATA_DIR: /fixtures/sensor-data
+      ACK_HOST: test-runner
+    networks:
+      - blockcap-test
+    depends_on:
+      root:
+        condition: service_healthy
+      fog:
+        condition: service_healthy
+      edge:
+        condition: service_healthy
+      sensor:
+        condition: service_healthy
+    command: ["python", "-m", "pytest", "/tests/test_registration_real.py", "-v", "--tb=short", "-s"]
+    volumes:
+      - fog-data:/fixtures/fog-data:ro
+      - edge-data:/fixtures/edge-data:ro
+      - sensor-data:/fixtures/sensor-data:ro
+
+volumes:
+  root-data:
+  root-genesis:
+  fog-data:
+  fog-genesis:
+  edge-data:
+  edge-genesis:
+  sensor-data:

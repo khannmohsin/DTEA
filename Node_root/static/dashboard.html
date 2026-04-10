@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlockCap Live Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #f5f1e8;
+      --panel: #fffaf1;
+      --ink: #1f2933;
+      --muted: #5f6c72;
+      --line: #d8ccba;
+      --accent: #8a4b2a;
+      --ok: #1f7a3c;
+      --warn: #b9770f;
+      --bad: #b12c2c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #efe4d2 0%, #f8f5ee 35%, #f5f1e8 100%);
+    }
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 { margin: 0 0 8px; font-size: 2rem; }
+    p { margin: 0; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: 0 12px 30px rgba(73, 44, 17, 0.08);
+    }
+    .nodes {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .node-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fffdf8;
+    }
+    .node-card .tier { text-transform: uppercase; font-size: 0.75rem; color: var(--muted); }
+    .status-online { color: var(--ok); }
+    .status-offline { color: var(--bad); }
+    .status-unknown { color: var(--warn); }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .kpi-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+    .event-feed {
+      max-height: 340px;
+      overflow: auto;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.88rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    canvas {
+      width: 100% !important;
+      height: 320px !important;
+    }
+    @media (max-width: 800px) {
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="panel">
+      <h1>BlockCap Live Dashboard</h1>
+      <p>Realtime node status, event stream, and latency summaries from the active BlockCap runtime.</p>
+    </header>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Node Status</h2>
+        <div id="nodes" class="nodes"></div>
+      </div>
+      <div class="panel">
+        <h2>Counters</h2>
+        <div class="kpis">
+          <div><div>Total Events</div><div id="kpi-events" class="kpi-value">0</div></div>
+          <div><div>Granted</div><div id="kpi-granted" class="kpi-value">0</div></div>
+          <div><div>Denied</div><div id="kpi-denied" class="kpi-value">0</div></div>
+          <div><div>Active Flows</div><div id="kpi-flows" class="kpi-value">0</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Latency Summary</h2>
+        <canvas id="latency-chart"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Live Event Feed</h2>
+        <div id="events" class="event-feed"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const nodesEl = document.getElementById('nodes');
+    const eventsEl = document.getElementById('events');
+    const kpiEvents = document.getElementById('kpi-events');
+    const kpiGranted = document.getElementById('kpi-granted');
+    const kpiDenied = document.getElementById('kpi-denied');
+    const kpiFlows = document.getElementById('kpi-flows');
+
+    const latencyChart = new Chart(document.getElementById('latency-chart').getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: [],
+        datasets: [{
+          label: 'Mean Latency (ms)',
+          data: [],
+          backgroundColor: '#8a4b2a'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { beginAtZero: true }
+        }
+      }
+    });
+
+    function nodeStatus(node) {
+      const raw = (node.api_url || node.rpc_url) ? 'online' : 'unknown';
+      return node.status || raw;
+    }
+
+    function renderNodes(nodes) {
+      nodesEl.innerHTML = '';
+      for (const node of nodes) {
+        const status = nodeStatus(node);
+        const card = document.createElement('article');
+        card.className = 'node-card';
+        card.innerHTML = `
+          <div class="tier">${node.tier || 'unknown'}</div>
+          <strong>${node.node_name || node.node_id || node.key || 'Unnamed Node'}</strong>
+          <div class="status-${status}">${status}</div>
+          <div>${node.api_url || node.rpc_url || 'No endpoint reported'}</div>
+          <div>${node.simulated_device || ''}</div>
+        `;
+        nodesEl.appendChild(card);
+      }
+    }
+
+    function renderLatency(latency) {
+      const entries = Object.entries(latency || {}).slice(0, 12);
+      latencyChart.data.labels = entries.map(([key]) => key);
+      latencyChart.data.datasets[0].data = entries.map(([, value]) => value.mean_ms || value.mean_latency_ms || 0);
+      latencyChart.update();
+    }
+
+    function renderCounters(payload) {
+      const stats = payload.event_stats || {};
+      const statusCounts = stats.status_counts || {};
+      kpiEvents.textContent = stats.total_events || 0;
+      kpiGranted.textContent = statusCounts.ok || 0;
+      kpiDenied.textContent = statusCounts.denied || 0;
+      kpiFlows.textContent = (payload.active_flows || []).length;
+    }
+
+    function appendEvent(event) {
+      const line = document.createElement('div');
+      line.textContent = `${event.node_tier || 'node'} | ${event.flow_type || 'flow'} | ${event.stage || 'stage'} | ${event.status || 'status'} | ${event.message || ''}`;
+      eventsEl.prepend(line);
+      while (eventsEl.children.length > 80) {
+        eventsEl.removeChild(eventsEl.lastChild);
+      }
+    }
+
+    async function refresh() {
+      const response = await fetch('/api/results');
+      const payload = await response.json();
+      renderNodes(payload.nodes || []);
+      renderCounters(payload);
+      renderLatency(payload.latency || {});
+      eventsEl.innerHTML = '';
+      for (const event of payload.recent_events || []) {
+        appendEvent(event);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+
+    const stream = new EventSource('/dashboard/stream');
+    stream.onmessage = (event) => {
+      try {
+        appendEvent(JSON.parse(event.data));
+      } catch (_err) {
+      }
+    };
+  </script>
+</body>
+</html>

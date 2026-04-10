@@ -1,0 +1,98 @@
+services:
+  cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: cloud
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-changeme}
+      FLASK_PORT: 5600
+      REAL_INTERACT: "1"
+    volumes:
+      - cloud-data:/app/Node_root/data
+      - cloud-genesis:/app/Node_root/genesis
+    ports:
+      - "5600:5600"
+      - "8545:8545"
+      - "30303:30303"
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2g
+
+  fog1:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: fog
+      ROOT_URL: http://cloud:5600
+      PARENT_URL: http://cloud:5600
+      FLASK_PORT: 5600
+      REAL_INTERACT: "1"
+    volumes:
+      - fog1-data:/app/Node_root/data
+      - fog1-genesis:/app/Node_root/genesis
+    ports:
+      - "5601:5600"
+    depends_on:
+      - cloud
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512m
+
+  edge1:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: edge
+      ROOT_URL: http://cloud:5600
+      PARENT_URL: http://fog1:5600
+      FLASK_PORT: 5600
+      REAL_INTERACT: "1"
+    volumes:
+      - edge1-data:/app/Node_root/data
+      - edge1-genesis:/app/Node_root/genesis
+    ports:
+      - "5602:5600"
+    depends_on:
+      - fog1
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256m
+
+  endpoint1:
+    image: blockcap-node
+    restart: unless-stopped
+    environment:
+      NODE_ROLE: endpoint
+      ROOT_URL: http://cloud:5600
+      PARENT_URL: http://edge1:5600
+      FLASK_PORT: 5600
+      REAL_INTERACT: "1"
+    volumes:
+      - endpoint1-data:/app/Node_root/data
+    ports:
+      - "5603:5600"
+    depends_on:
+      - edge1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128m
+
+volumes:
+  cloud-data:
+  cloud-genesis:
+  fog1-data:
+  fog1-genesis:
+  edge1-data:
+  edge1-genesis:
+  endpoint1-data:

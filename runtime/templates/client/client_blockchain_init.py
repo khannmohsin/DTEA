@@ -107,6 +107,8 @@ class BlockchainInit:
     @track_performance
     def start_blockchain_node(self, p2p_port, rpc_http_port, ip_address):
         enode_address = self.load_enode_address()
+        if not enode_address:
+            raise RuntimeError(f"Missing root enode bootstrap file: {self.enode_file}")
         with open(self.prefunded_account_file, "r") as f:
             data = json.load(f)
         addresses = [entry["address"] for entry in data["prefunded_accounts"]]
@@ -181,6 +183,5 @@ if __name__ == "__main__":
             print(f"Error: Function '{method_name}' not found in BlockchainInit.")
     else:
         print("Usage: python blockchain_init.py <function_name> [arguments...]")
-
 
 

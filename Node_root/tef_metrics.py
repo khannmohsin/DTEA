@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import statistics
 import threading
 import time
@@ -24,6 +25,14 @@ def ensure_results_dir(start_path: str) -> Path:
     return results_dir
 
 
+def ensure_ui_runs_dir(start_path: str | os.PathLike[str]) -> Path:
+    runs_dir = Path(start_path)
+    if runs_dir.name != "ui_runs":
+        runs_dir = ensure_results_dir(str(start_path)) / "ui_runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    return runs_dir
+
+
 @dataclass(frozen=True)
 class LatencyKey:
     operation: str
@@ -40,6 +49,7 @@ class LatencyRecorder:
         self._results_dir.mkdir(parents=True, exist_ok=True)
         self._samples: dict[LatencyKey, list[float]] = {}
         self._lock = threading.RLock()
+        self._last_write = 0.0
 
     def record(self, operation: str, node_tier: str, condition: str, latency_seconds: float) -> None:
         key = LatencyKey(operation=operation, node_tier=node_tier, condition=condition)
@@ -73,7 +83,12 @@ class LatencyRecorder:
 
     def write_summary(self) -> Path:
         output_path = self._results_dir / "latency.json"
+        now = time.time()
+        if output_path.exists() and (now - self._last_write) < 5.0:
+            return output_path
+        self._last_write = now
         data = self.summary()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True))
         tmp_path.replace(output_path)
@@ -128,10 +143,26 @@ class ProcessEventRecorder:
         self._seq = 0
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
+        self._write_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=1000)
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True, name="process-event-writer")
+        self._writer_thread.start()
 
     @property
     def output_path(self) -> Path:
         return self._output_path
+
+    def _writer_loop(self) -> None:
+        while True:
+            item = self._write_queue.get()
+            try:
+                if item is None:
+                    return
+                with self._output_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(item, sort_keys=True) + "\n")
+            except Exception:
+                pass
+            finally:
+                self._write_queue.task_done()
 
     def emit(
         self,
@@ -177,10 +208,20 @@ class ProcessEventRecorder:
                 to_signature=to_signature or None,
             )
             self._buffer.append(event)
-            with self._output_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
+            event_dict = event.to_dict()
+            try:
+                self._write_queue.put_nowait(event_dict)
+            except queue.Full:
+                pass
             self._condition.notify_all()
-            return event.to_dict()
+            return event_dict
+
+    def flush(self, timeout: float = 1.0) -> None:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while time.monotonic() < deadline:
+            if self._write_queue.unfinished_tasks == 0:
+                return
+            time.sleep(0.01)
 
     def recent(self, limit: int = 100) -> list[dict[str, Any]]:
         count = max(1, int(limit))
@@ -322,3 +363,108 @@ class TokenBucketRateLimiter:
             deficit = 1.0 - bucket["tokens"]
             retry_after_ms = int((deficit / rate) * 1000) + 1
             return False, retry_after_ms
+
+
+class UiResultsRecorder:
+    def __init__(self, start_path: str | os.PathLike[str], *, max_snapshots: int = 720):
+        self._runs_dir = ensure_ui_runs_dir(start_path)
+        self._max_snapshots = max(30, int(max_snapshots))
+        self._series: dict[str, deque[dict[str, Any]]] = {}
+        self._lock = threading.RLock()
+
+    def _run_path(self, scenario: str) -> Path:
+        safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in scenario).strip("-") or "scenario"
+        return self._runs_dir / f"{safe}.json"
+
+    def _latency_points(self, latency_summary: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = []
+        for key, item in sorted((latency_summary or {}).items()):
+            rows.append({
+                "key": key,
+                "operation": item.get("operation"),
+                "node_tier": item.get("node_tier"),
+                "condition": item.get("condition"),
+                "mean_ms": item.get("mean_ms", 0.0),
+                "count": item.get("count", 0),
+            })
+        return rows
+
+    def _node_status_counts(self, scenario_details: dict[str, Any] | None) -> dict[str, int]:
+        counts = Counter()
+        node_views = ((scenario_details or {}).get("scenario") or {}).get("node_views") or []
+        for node in node_views:
+            counts[str(node.get("summary_status") or "unknown")] += 1
+        return dict(sorted(counts.items()))
+
+    def record_snapshot(
+        self,
+        *,
+        scenario: str | None,
+        event_stats: dict[str, Any],
+        active_flows: list[dict[str, Any]],
+        latency_summary: dict[str, dict[str, Any]],
+        scenario_details: dict[str, Any] | None,
+        research_sections: dict[str, Any] | None = None,
+        summary_cards: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        if not scenario:
+            return None
+        snapshot = {
+            "ts_unix_ms": int(time.time() * 1000),
+            "total_events": int((event_stats or {}).get("total_events", 0)),
+            "granted": int(((event_stats or {}).get("status_counts") or {}).get("ok", 0)),
+            "denied": int(((event_stats or {}).get("status_counts") or {}).get("denied", 0)),
+            "errors": int(((event_stats or {}).get("status_counts") or {}).get("error", 0)),
+            "active_flows": len(active_flows or []),
+            "node_status_counts": self._node_status_counts(scenario_details),
+            "latency_points": self._latency_points(latency_summary or {}),
+        }
+        with self._lock:
+            bucket = self._series.setdefault(scenario, deque(maxlen=self._max_snapshots))
+            bucket.append(snapshot)
+            payload = {
+                "scenario": scenario,
+                "updated_at_ms": snapshot["ts_unix_ms"],
+                "snapshots": list(bucket),
+                "summary_cards": list(summary_cards or []),
+                "research_sections": research_sections or {},
+                "scenario_details": scenario_details or {},
+            }
+            tmp_path = self._run_path(scenario).with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+            tmp_path.replace(self._run_path(scenario))
+        return snapshot
+
+    def load_run(self, scenario: str) -> dict[str, Any] | None:
+        path = self._run_path(scenario)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+
+    def available_runs(self) -> list[dict[str, Any]]:
+        rows = []
+        for path in sorted(self._runs_dir.glob("*.json")):
+            data = self.load_run(path.stem)
+            if not data:
+                continue
+            snapshots = data.get("snapshots") or []
+            rows.append({
+                "scenario": data.get("scenario") or path.stem,
+                "snapshot_count": len(snapshots),
+                "updated_at_ms": data.get("updated_at_ms") or (snapshots[-1]["ts_unix_ms"] if snapshots else 0),
+                "path": str(path),
+            })
+        rows.sort(key=lambda item: item["updated_at_ms"], reverse=True)
+        return rows
+
+    def series(self, scenario: str | None) -> list[dict[str, Any]]:
+        if not scenario:
+            return []
+        with self._lock:
+            if scenario in self._series:
+                return list(self._series[scenario])
+        data = self.load_run(scenario)
+        return list((data or {}).get("snapshots") or [])

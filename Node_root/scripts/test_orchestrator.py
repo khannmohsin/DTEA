@@ -83,6 +83,47 @@ def make_router(state):
             state["nextPolicyId"] += 1
             return FakeCompleted("✅ createPolicy: 0xdead\n")
 
+        if cmd == "ensurePolicy":
+            from_role_name, to_role_name, ops_csv, ctx_schema = args
+            role_to_num = {"Unknown": 0, "Cloud": 1, "Fog": 2, "Edge": 3, "Sensor": 4, "Actuator": 5}
+            wanted = {
+                "fromRole": role_to_num.get(from_role_name, 0),
+                "toRole": role_to_num.get(to_role_name, 0),
+                "opsAllowed": OP.get(ops_csv, 0),
+                "ctxSchema": orch_mod._ctx_hash(ctx_schema),
+            }
+            for policy_id, policy in state["policies"].items():
+                if (
+                    int(policy.get("version", 0)) > 0
+                    and int(policy.get("fromRole", 0)) == wanted["fromRole"]
+                    and int(policy.get("toRole", 0)) == wanted["toRole"]
+                    and int(policy.get("opsAllowed", 0)) == wanted["opsAllowed"]
+                    and str(policy.get("ctxSchema", "")).lower() == wanted["ctxSchema"].lower()
+                ):
+                    return FakeCompleted(json.dumps({
+                        "status": "exists",
+                        "policyId": int(policy_id),
+                        "txHash": None,
+                        "note": "found_on_chain",
+                    }) + "\n")
+            policy_id = state["nextPolicyId"]
+            state["policies"][policy_id] = {
+                "fromRole": wanted["fromRole"],
+                "toRole": wanted["toRole"],
+                "opsAllowed": wanted["opsAllowed"],
+                "isDeprecated": False,
+                "ctxSchema": wanted["ctxSchema"],
+                "policyHash": "0x" + "11" * 32,
+                "version": 1,
+            }
+            state["nextPolicyId"] += 1
+            return FakeCompleted(json.dumps({
+                "status": "created",
+                "policyId": int(policy_id),
+                "txHash": "0xdead",
+                "note": "created_and_resolved",
+            }) + "\n")
+
         if cmd == "nextPolicyId":
             return FakeCompleted(f"{state['nextPolicyId']}\n")
 
@@ -131,6 +172,14 @@ def make_router(state):
             if addr not in state["validators"]:
                 state["validators"].append(addr)
             return FakeCompleted("✅ proposeValidator: 0xbeef\n")
+
+        if cmd == "proposeValidatorVote":
+            addr = args[0].lower()
+            idx = int((env or {}).get("FROM_IDX", 0))
+            state.setdefault("vote_from_indices", []).append(idx)
+            if addr not in state["validators"]:
+                state["validators"].append(addr)
+            return FakeCompleted(f'{{"result":true,"from_idx":{idx}}}\n')
 
         if cmd == "isValidator":
             node_sig = args[0]
@@ -261,6 +310,7 @@ def state(tmp_policy_index_file):
         "node_types": {},   # sig -> role name
         "node_addrs": {},   # sig -> address
         "validators": [],   # list of addresses (lowercase)
+        "vote_from_indices": [],
         "grants": {},       # (from,to) -> grant dict
         "allow_register_tx": True,
         "last_address": "0x2222222222222222222222222222222222222222",
@@ -325,10 +375,55 @@ def test_registration_non_endpoint(orch, state):
     assert out["ok"] is True
     status = out.get("status")
     assert status in ("registered", "already_registered", "validator_proposed", "validator_included")
-    assert out["ack_sent"] is True
+    assert out["ack_sent"] is False
+    assert out["ack_status"] in ("queued", "skipped")
+    assert out["ack_required"] is True
     assert "tx" in out or status != "registered"
     if not IS_REAL:
         assert "sig-edge-1" in state["registered_sigs"]
+
+
+def test_registration_queues_ack_and_worker_runs(monkeypatch, orch, state):
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, *, target=None, kwargs=None, daemon=None, name=None):
+            self._target = target
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target:
+                self._target(**self._kwargs)
+
+    class FakeAckSender:
+        def __init__(self, *args, **kwargs):
+            calls.append({"init": kwargs})
+
+        def send_acknowledgment(self, node_id, *, node_type):
+            calls.append({"node_id": node_id, "node_type": node_type})
+            return True
+
+    monkeypatch.setattr(orch_mod.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(orch_mod, "AcknowledgementSender", FakeAckSender)
+
+    payload = {
+        "node_id": "FG-ACK",
+        "node_name": "Fog-Ack",
+        "node_type": "Fog",
+        "public_key": "0xabc",
+        "address": state["last_address"],
+        "rpcURL": "http://x",
+        "signature": "sig-fog-ack",
+        "node_url": "http://127.0.0.1:5002",
+        "bootstrap_base_url": "http://127.0.0.1:5600",
+    }
+    out = orch.registration_flow(payload)
+
+    assert out["ok"] is True
+    assert out["ack_status"] == "queued"
+    assert out["ack_required"] is True
+    assert out["ack_sent"] is False
+    assert calls[-1] == {"node_id": "FG-ACK", "node_type": "Fog"}
 
 def test_registration_endpoint(orch, state):
     payload = {
@@ -344,6 +439,8 @@ def test_registration_endpoint(orch, state):
     assert out["ok"] is True
     assert out.get("status") in ("endpoint_registered", "already_registered")
     assert out["ack_sent"] is False
+    assert out["ack_status"] == "not_needed"
+    assert out["ack_required"] is False
 
 def test_registration_validator_included(orch, state):
     payload = {
@@ -359,12 +456,28 @@ def test_registration_validator_included(orch, state):
     state["last_address"] = payload["address"]
     out = orch.registration_flow(payload)
     assert out["ok"] is True
-    assert out["status"] in ("validator_included", "validator_proposed")
+    assert out["status"] in ("validator_already_included", "validator_proposed")
     if IS_REAL:
         vlist = (orch.qbft_get_validators() or "").lower()
         assert payload["address"].lower() in vlist
-    else:
-        assert payload["address"].lower() in state["validators"]
+
+
+def test_registration_validator_strips_ansi_from_address(orch, state):
+    payload = {
+        "node_id": "FG-ANSI",
+        "node_name": "Fog-Ansi",
+        "node_type": "Fog",
+        "public_key": "0xabc",
+        "address": "\u001b[m0x5555555555555555555555555555555555555555",
+        "rpcURL": "http://x",
+        "signature": "sig-fog-ansi",
+        "wants_validator": True,
+    }
+    state["last_address"] = "0x5555555555555555555555555555555555555555"
+    out = orch.registration_flow(payload)
+
+    assert out["ok"] is True
+    assert payload["address"] == "0x5555555555555555555555555555555555555555"
 
 
 def test_registration_fog_without_validator_request_stays_registered(orch, state):
@@ -531,12 +644,12 @@ def test_resource_key_normalization(orch, state):
     out = orch.access_flow(from_sig, to_sig, "GET", "metrics")
     assert out["ok"] is True and out["granted"] is True
 
-def test_policy_id_unknown_when_nextPolicyId_fails(orch, state, monkeypatch):
+def test_policy_id_unknown_when_policy_resolution_bridge_fails(orch, state, monkeypatch):
     if IS_REAL:
-        pytest.skip("nextPolicyId failure is a router-only branch; skip in REAL mode")
+        pytest.skip("policy resolution bridge failure is a router-only branch; skip in REAL mode")
     def failing_router(argv, capture_output=True, text=True, env=None):
         base = make_router(state)
-        if len(argv) >= 3 and argv[2] == "nextPolicyId":
+        if len(argv) >= 3 and argv[2] in {"ensurePolicy", "nextPolicyId", "findPolicyId"}:
             return FakeCompleted("", "boom", 1)
         return base(argv, capture_output, text, env)
     monkeypatch.setattr(orch_mod.subprocess, "run", failing_router)
@@ -548,11 +661,27 @@ def test_policy_id_unknown_when_nextPolicyId_fails(orch, state, monkeypatch):
     state["node_types"]["st"] = "Fog"
 
     out = o.access_flow("sf", "st", "GET", "/x")
-    assert out["ok"] is False and out["why"] == "policy_id_unknown"
+    assert out["ok"] is False and out["why"] == "policy_error:boom"
 
 def test_ensure_policy_create_if_missing_false(orch, state, tmp_policy_index_file):
     res = orch.ensure_policy("Edge", "Fog", "READ", "api:GET:/x", create_if_missing=False)
     assert res["status"] == "missing" and res["policyId"] is None
+
+
+def test_ensure_policy_bridge_returns_created_policy_id(orch, state):
+    res = orch.ensure_policy("Edge", "Fog", "READ", "api:GET:/resolved", create_if_missing=True)
+
+    assert res["status"] == "created"
+    assert res["policyId"] is not None
+    assert int(res["policyId"]) >= 1
+
+
+def test_ensure_policy_rejects_invalid_roles(orch):
+    res = orch.ensure_policy("Edge", "Endpoint", "READ", "/invalid", create_if_missing=True)
+
+    assert res["status"] == "error"
+    assert res["policyId"] is None
+    assert "invalid_policy_roles:Endpoint" in res["note"]
 
 def test_grant_revoked_then_reissued(orch, state):
     f, t = "sig-a1", "sig-b1"
@@ -729,6 +858,134 @@ def test_registration_flow_emits_signature_and_status_events(orch, state):
     assert "signature_verification" in stages
     assert "already_registered_check" in stages
     assert "registration_submit" in stages
+
+
+def test_wait_for_peer_bump_returns_false_without_growth(orch, monkeypatch):
+    monkeypatch.setattr(orch, "peer_count", lambda: 1)
+    monkeypatch.setattr(orch_mod.time, "sleep", lambda _sec: None)
+
+    assert orch._wait_for_peer_bump(max_wait_sec=3, step=1) is False
+
+
+def test_promote_validator_async_does_not_block_on_peer_wait(orch, state, monkeypatch):
+    addr = "0x9999999999999999999999999999999999999999"
+    calls = {"votes": 0}
+
+    def fake_wait(*_args, **_kwargs):
+        raise AssertionError("_wait_for_peer_bump should not be called during validator promotion")
+
+    def fake_vote(vote_addr, voter_indices=None, flow_id=None, from_signature=None):
+        calls["votes"] += 1
+        assert vote_addr == addr
+        state["validators"].append(vote_addr.lower())
+        return True
+
+    class InlineThread:
+        def __init__(self, *, target, name=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(orch, "_wait_for_peer_bump", fake_wait)
+    monkeypatch.setattr(orch, "_propose_and_vote", fake_vote)
+    monkeypatch.setattr(orch_mod.threading, "Thread", InlineThread)
+
+    flow_id = orch._promote_validator_async({"address": addr}, from_signature="sig-validator")
+
+    assert flow_id is not None
+    assert calls["votes"] == 1
+
+
+def test_registration_returns_validator_proposed_and_starts_async_promotion(orch, state, monkeypatch):
+    payload = {
+        "node_id": "FG-ASYNC-1",
+        "node_name": "FogAsync",
+        "node_type": "Fog",
+        "public_key": "0xabc",
+        "address": "0x6666666666666666666666666666666666666666",
+        "rpcURL": "http://x",
+        "signature": "sig-fog-async",
+        "wants_validator": True,
+    }
+    state["last_address"] = payload["address"]
+    started = {}
+
+    def fake_promote(req, *, from_signature, voter_indices=None, peer_wait_seconds=5):
+        started["payload"] = dict(req)
+        started["from_signature"] = from_signature
+        started["peer_wait_seconds"] = peer_wait_seconds
+        return "validator-async-1"
+
+    monkeypatch.setattr(orch, "_promote_validator_async", fake_promote)
+
+    out = orch.registration_flow(payload)
+
+    assert out["ok"] is True
+    assert out["status"] == "validator_proposed"
+    assert started["payload"]["node_id"] == "FG-ASYNC-1"
+    assert started["from_signature"] == "sig-fog-async"
+
+
+def test_registration_returns_validator_already_included_when_present(orch, state, monkeypatch):
+    payload = {
+        "node_id": "FG-INCLUDED-1",
+        "node_name": "FogIncluded",
+        "node_type": "Fog",
+        "public_key": "0xabc",
+        "address": "0x7777777777777777777777777777777777777777",
+        "rpcURL": "http://x",
+        "signature": "sig-fog-included",
+        "wants_validator": True,
+    }
+    state["validators"].append(payload["address"].lower())
+    called = {"async": False}
+
+    monkeypatch.setattr(orch, "_promote_validator_async", lambda *_args, **_kwargs: called.__setitem__("async", True))
+
+    out = orch.registration_flow(payload)
+
+    assert out["ok"] is True
+    assert out["status"] == "validator_already_included"
+    assert called["async"] is False
+
+
+def test_propose_and_vote_uses_distinct_signer_indices(orch, monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(orch, "proposeValidatorVote", lambda addr, vote, from_idx=None: calls.append((addr, vote, from_idx)) or "ok")
+
+    ok = orch._propose_and_vote("0x8888888888888888888888888888888888888888", voter_indices=[0, 1, 2])
+
+    assert ok is True
+    assert calls == [
+        ("0x8888888888888888888888888888888888888888", "true", 0),
+        ("0x8888888888888888888888888888888888888888", "true", 1),
+        ("0x8888888888888888888888888888888888888888", "true", 2),
+    ]
+
+
+def test_js_bridge_prefers_orchestrator_rpc_over_parent_env(orch, monkeypatch):
+    captured = {}
+
+    class DummyProc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, env):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return DummyProc()
+
+    monkeypatch.setenv("BESU_RPC_URL", "http://127.0.0.1:8545")
+    monkeypatch.setattr(orch_mod.subprocess, "run", fake_run)
+    orch.besu_rpc_url = "http://127.0.0.1:44001"
+
+    result = orch._js("checkIfDeployed")
+
+    assert result.ok is True
+    assert captured["env"]["BESU_RPC_URL"] == "http://127.0.0.1:44001"
 
 # ------------- helpers -------------
 

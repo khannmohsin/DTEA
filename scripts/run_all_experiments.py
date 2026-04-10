@@ -11,6 +11,32 @@ from typing import Any
 import requests
 
 
+# ---------------------------------------------------------------------------
+# Progress bar helpers
+# ---------------------------------------------------------------------------
+
+def _eta_str(seconds: float) -> str:
+    if seconds < 0 or seconds > 86400:
+        return "--:--"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _bar(done: int, total: int, width: int = 20) -> str:
+    filled = int(width * done / total) if total else 0
+    return "█" * filled + "░" * (width - filled)
+
+
+def _op(label: str, result: dict[str, Any]) -> str:
+    ok = result.get("ok", False)
+    ms = result.get("latency_ms", 0.0)
+    if ok:
+        return f"\033[32m✓{label}={ms:.0f}ms\033[0m"
+    code = result.get("status_code", "?")
+    return f"\033[31m✗{label}=FAIL({code})\033[0m"
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -90,6 +116,61 @@ def first_node(scenario: dict[str, Any], tier: str) -> dict[str, Any] | None:
     return None
 
 
+def parse_validator_addresses(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        cleaned = raw.replace("[", "").replace("]", "").replace('"', "").replace("'", "")
+        parts = [part.strip().lower() for part in cleaned.split(",") if part.strip()]
+        return parts
+    if isinstance(raw, (list, tuple)):
+        return [str(part).strip().lower() for part in raw if str(part).strip()]
+    return []
+
+
+def settled_validator_signatures(scenario: dict[str, Any] | None, *, timeout_seconds: float = 30.0) -> list[str]:
+    if not scenario:
+        return []
+
+    root = scenario.get("root") or {}
+    root_api_url = host_url(root.get("api_url"))
+    address_to_signature: dict[str, str] = {}
+
+    root_details = root.get("node_details") or {}
+    root_address = str(root_details.get("address") or "").strip().lower()
+    root_signature = str(root_details.get("signature") or "").strip()
+    if root_address and root_signature:
+        address_to_signature[root_address] = root_signature
+
+    wanted_addresses: set[str] = set()
+    for node in scenario.get("nodes", []):
+        signature = str((node.get("payload") or {}).get("signature") or "").strip()
+        address = str((node.get("payload") or {}).get("address") or "").strip().lower()
+        if signature and address:
+            address_to_signature[address] = signature
+        if node.get("wants_validator") and address:
+            wanted_addresses.add(address)
+
+    if not root_api_url:
+        return [sig for _, sig in sorted(address_to_signature.items()) if sig]
+
+    validators: list[str] = []
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        try:
+            response = requests.get(root_api_url + "/validators", timeout=5)
+            payload = response.json() if response.ok else {}
+            validators = parse_validator_addresses(payload.get("validators"))
+        except Exception:
+            validators = []
+        if not wanted_addresses or wanted_addresses.issubset(set(validators)) or time.monotonic() >= deadline:
+            break
+        time.sleep(2)
+
+    resolved = [address_to_signature[address] for address in validators if address in address_to_signature]
+    if root_signature and root_signature not in resolved:
+        resolved.insert(0, root_signature)
+    return resolved
+
+
 def gather_registered_signatures(scenario: dict[str, Any]) -> list[str]:
     sigs: list[str] = []
     for node in scenario.get("nodes", []):
@@ -163,6 +244,42 @@ def extract_policy_id(payload: Any) -> int | None:
         return None
 
 
+def measure_revocation_propagation(
+    host: str,
+    requester_sig: str,
+    target_sig: str,
+    policy_id: int | None,
+    *,
+    max_wait_ms: int = 5000,
+    poll_interval_ms: int = 100,
+) -> float | None:
+    """After a revoke transaction, poll /grant until granted:false.
+
+    Returns elapsed milliseconds from poll start to first false response,
+    or None if timed out without observing revocation.
+    Measurement sequence: revoke confirmed → start timer → poll every 100 ms → time-to-false.
+    """
+    if policy_id is None:
+        return None
+    grant_url = host.rstrip("/") + "/grant"
+    params = {
+        "from_signature": requester_sig,
+        "to_signature": target_sig,
+        "policy_id": policy_id,
+    }
+    deadline = time.perf_counter() + max_wait_ms / 1000.0
+    start = time.perf_counter()
+    while time.perf_counter() < deadline:
+        try:
+            resp = requests.get(grant_url, params=params, timeout=5)
+            if resp.ok and not resp.json().get("granted", True):
+                return round((time.perf_counter() - start) * 1000, 3)
+        except Exception:
+            pass
+        time.sleep(poll_interval_ms / 1000.0)
+    return None  # timed out — treated as missing data, not an error
+
+
 def run_load_test(host: str, concurrency: int, body: dict[str, Any]) -> Any:
     body_path = RESULTS_DIR / f"load_body_{concurrency}.json"
     body_path.write_text(json.dumps(body, indent=2, sort_keys=True))
@@ -215,15 +332,7 @@ def experimental_setup(scenario: dict[str, Any] | None) -> dict[str, Any]:
         genesis_path = REPO_ROOT / "Node_root" / "genesis" / "genesis.json"
     genesis = json.loads(genesis_path.read_text())
     qbft = genesis.get("config", {}).get("qbft", {})
-    validator_nodes = []
-    if scenario:
-        root_sig = ((scenario.get("root") or {}).get("node_details") or {}).get("signature")
-        if root_sig:
-            validator_nodes.append(root_sig)
-        for node in scenario.get("nodes", []):
-            status = ((node.get("registration") or {}).get("status") or "")
-            if status in {"validator_included", "validator_already_included"}:
-                validator_nodes.append((node.get("payload") or {}).get("signature"))
+    validator_nodes = settled_validator_signatures(scenario)
     return {
         "network_id": genesis.get("config", {}).get("chainId"),
         "block_time_seconds": qbft.get("blockperiodseconds"),
@@ -234,7 +343,7 @@ def experimental_setup(scenario: dict[str, Any] | None) -> dict[str, Any]:
         "selection_rationale": {
             "block_time_seconds": "Repo QBFT default chosen for a short private-network confirmation window while keeping local runs stable.",
             "request_timeout_seconds": "Repo QBFT default paired with the block period for local validator-round recovery.",
-            "validator_set_size": "Derived from the scenario manifest entries that finished with validator inclusion.",
+            "validator_set_size": "Derived from the live validator set when the root API is reachable, with a short wait for validator promotion to settle.",
         },
     }
 
@@ -248,9 +357,27 @@ def build_comparison_table() -> Any:
     return read_json(RESULTS_DIR / "gas_comparison.json")
 
 
-def tier_experiment(host: str, tier: str, target_sig: str, requester_sig: str, delegatee_sig: str, runs: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def tier_experiment(
+    host: str,
+    tier: str,
+    target_sig: str,
+    requester_sig: str,
+    delegatee_sig: str,
+    runs: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[float]]:
+    """Run a full experiment set against one tier host.
+
+    Returns:
+        roundtrip_rows      – cold/warm end-to-end request rows
+        lifecycle_samples   – HTTP-side lifecycle operation rows
+        propagation_samples – individual revokeTokenPropagation latencies in ms
+    """
     roundtrip_rows: list[dict[str, Any]] = []
     lifecycle_samples: list[dict[str, Any]] = []
+    propagation_samples: list[float] = []
+
+    print(f"\n\033[1m── {tier.upper()} tier  ({runs} runs) ──\033[0m")
+    tier_start = time.perf_counter()
 
     for idx in range(runs):
         resource_path = f"/experiments/{tier}/{idx}/{int(time.time() * 1000)}"
@@ -316,6 +443,14 @@ def tier_experiment(host: str, tier: str, target_sig: str, requester_sig: str, d
             },
         )
 
+
+        # Measure propagation: poll /grant until granted:false.
+        # Start timer immediately after revoke HTTP response (tx confirmed).
+        if revoke.get("ok"):
+            prop_ms = measure_revocation_propagation(host, requester_sig, target_sig, seed_policy_id)
+            if prop_ms is not None:
+                propagation_samples.append(prop_ms)
+
         roundtrip_rows.extend([
             {"tier": tier, "condition": "cold", **cold},
             {"tier": tier, "condition": "warm", **warm},
@@ -326,7 +461,29 @@ def tier_experiment(host: str, tier: str, target_sig: str, requester_sig: str, d
             {"tier": tier, "operation": "revoke_http", **revoke},
         ])
 
-    return roundtrip_rows, lifecycle_samples
+        # Progress line
+        elapsed = time.perf_counter() - tier_start
+        rate = (idx + 1) / elapsed if elapsed > 0 else 0
+        eta_secs = (runs - idx - 1) / rate if rate > 0 else 0
+        bar = _bar(idx + 1, runs)
+        ops_str = "  ".join([
+            _op("cold", cold),
+            _op("warm", warm),
+            _op("delegate", delegate),
+            _op("expiry", expiry),
+            _op("revoke", revoke),
+        ])
+        has_error = any(not r.get("ok") for r in (cold, warm, delegate, expiry, revoke))
+        status = "\033[31m[FAIL]\033[0m" if has_error else "\033[32m[ok]\033[0m"
+        print(
+            f"  [{tier:8s}] {idx+1:3d}/{runs} [{bar}] ETA {_eta_str(eta_secs)}  {ops_str}  {status}",
+            flush=True,
+        )
+
+    elapsed_total = time.perf_counter() - tier_start
+    print(f"  [{tier:8s}] done in {elapsed_total:.1f}s")
+
+    return roundtrip_rows, lifecycle_samples, propagation_samples
 
 
 def summarize_roundtrip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -374,9 +531,19 @@ def main() -> None:
     if scenario and "endpoint" not in tier_hosts:
         raise SystemExit("scenario file does not expose an endpoint host")
 
+    tiers = list(tier_hosts.keys())
+    ops_per_run = 5  # cold, warm, delegate, expiry, revoke
+    total_steps = len(tiers) * args.runs * ops_per_run + 3  # +3 load tests
+    print(f"\033[1mBlockCap Experiment Run\033[0m")
+    print(f"  tiers={', '.join(tiers)}  runs={args.runs}  ops/run={ops_per_run}  load-tests=3")
+    print(f"  total requests ≈ {total_steps}")
+    experiment_start = time.perf_counter()
+
     roundtrip_rows: list[dict[str, Any]] = []
     http_lifecycle_rows: list[dict[str, Any]] = []
     internal_latency_summary: dict[str, dict[str, Any]] = {}
+    # Per-tier propagation latency samples (ms), collected by polling /grant after revoke.
+    propagation_latency_by_tier: dict[str, list[float]] = {}
 
     if scenario:
         for tier, host in tier_hosts.items():
@@ -384,10 +551,14 @@ def main() -> None:
             if not target_sig:
                 continue
             requester_sig, delegatee_sig = choose_actor_signatures(scenario, target_sig)
-            rt_rows, life_rows = tier_experiment(host, tier, target_sig, requester_sig, delegatee_sig, args.runs)
+            rt_rows, life_rows, prop_samples = tier_experiment(
+                host, tier, target_sig, requester_sig, delegatee_sig, args.runs
+            )
             roundtrip_rows.extend(rt_rows)
             http_lifecycle_rows.extend(life_rows)
             internal_latency_summary[tier] = fetch_latency_summary(host)
+            if prop_samples:
+                propagation_latency_by_tier[tier] = prop_samples
     else:
         for tier, host in tier_hosts.items():
             samples = [
@@ -406,14 +577,40 @@ def main() -> None:
     else:
         load_body = {"method": "GET", "resource_path": "/temperature", "from_signature": "sig-a", "to_signature": "sig-b"}
 
-    load_results = {
-        str(concurrency): run_load_test(tier_hosts["fog"], concurrency, load_body)
-        for concurrency in (10, 50, 100)
-    }
+    load_results = {}
+    print(f"\n\033[1m── Load tests (fog) ──\033[0m")
+    for concurrency in (10, 50, 100):
+        print(f"  concurrency={concurrency:3d} ... ", end="", flush=True)
+        t0 = time.perf_counter()
+        result = run_load_test(tier_hosts["fog"], concurrency, load_body)
+        elapsed = time.perf_counter() - t0
+        rps = (result or {}).get("throughput_rps", "?")
+        errs = (result or {}).get("error_count", "?")
+        status = "\033[31m[FAIL]\033[0m" if errs else "\033[32m[ok]\033[0m"
+        print(f"done in {elapsed:.1f}s  rps={rps}  errors={errs}  {status}", flush=True)
+        load_results[str(concurrency)] = result
 
+    # Inject externally-measured propagation rows into internal_latency_summary so
+    # they appear in token_lifecycle_latency alongside the node-reported metrics.
+    for tier, prop_ms_list in propagation_latency_by_tier.items():
+        mean_ms = round(sum(prop_ms_list) / len(prop_ms_list), 3)
+        stddev_ms = round(
+            statistics.pstdev(prop_ms_list) if len(prop_ms_list) > 1 else 0.0, 3
+        )
+        internal_latency_summary.setdefault(tier, {})["revokeTokenPropagation|warm"] = {
+            "operation": "revokeTokenPropagation",
+            "condition": "warm",
+            "mean_ms": mean_ms,
+            "stddev_ms": stddev_ms,
+            "count": len(prop_ms_list),
+        }
+
+    print(f"\n\033[1m── Gas comparison ──\033[0m")
+    print(f"  building ... ", end="", flush=True)
     gas_summary = read_json(RESULTS_DIR / "gas_summary.json")
     contract_metrics = read_json(RESULTS_DIR / "contract_metrics.json")
     gas_comparison = build_comparison_table()
+    print("\033[32mdone\033[0m", flush=True)
     result = {
         "experimental_setup": experimental_setup(scenario),
         "end_to_end_latency": summarize_roundtrip(roundtrip_rows),
@@ -429,7 +626,17 @@ def main() -> None:
 
     output_path = RESULTS_DIR / "experimental_results.json"
     output_path.write_text(json.dumps(result, indent=2, sort_keys=True))
+
+    total_elapsed = time.perf_counter() - experiment_start
+    total_errors = sum(
+        row.get("error_count", 0)
+        for row in result["end_to_end_latency"]
+    )
+    print(f"\n\033[1m── Summary ──\033[0m")
     print(summarize_table(result["end_to_end_latency"]))
+    status = "\033[31mFAILED\033[0m" if total_errors else "\033[32mPASSED\033[0m"
+    print(f"\n  total time: {total_elapsed:.1f}s   total errors: {total_errors}   {status}")
+    print(f"  results → {output_path}")
 
 
 if __name__ == "__main__":

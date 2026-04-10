@@ -1,13 +1,12 @@
 # orchestrator.py
-# Helpers for Node/Policy/Grant automation using your current interact.js.
-# - Perf-instrumented wrappers for every interact.js call we use.
+# Blockchain bridge, registration, and access-control logic for BlockCap.
+# - Direct web3.py contract calls (no subprocess bridge).
 # - Registration + Acknowledgement flow.
 # - Automated fine-grained access control + delegation.
 #
 # Requirements:
-#   - interact.js in the same repo root
-#   - data/NodeRegistry.json deployed
-#   - prefunded_keys.json present
+#   - data/NodeRegistry.json (ABI + contract address) deployed
+#   - prefunded_keys.json present (signing accounts)
 #
 # Usage sketch:
 #   orch = Orchestrator()
@@ -20,17 +19,19 @@ import os
 import re
 import subprocess
 import time
-import statistics
 import uuid
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
-from acknowledgement import AcknowledgementSender
+from acknowledgement import AcknowledgementSender, ALLOWED_ACK_ROLES
 import threading
-import json
-import re
 from pathlib import Path
 
 import requests
+
+try:
+    import fcntl
+except Exception:
+    fcntl = None
 
 
 try:
@@ -39,6 +40,16 @@ try:
 except Exception:
     keys = None
     keccak = None
+
+try:
+    from eth_account import Account as EthAccount
+except Exception:
+    EthAccount = None
+
+try:
+    from eth_abi import encode as eth_abi_encode
+except Exception:
+    eth_abi_encode = None
 
 # plug in your decorator
 try:
@@ -58,6 +69,7 @@ from tef_metrics import LatencyRecorder, ProcessEventRecorder, ensure_results_di
 
 ROLE = {"Unknown":0, "Cloud":1, "Fog":2, "Edge":3, "Sensor":4, "Actuator":5}
 ROLE_BY_NUM = {v:k for (k,v) in ROLE.items()}
+VALID_POLICY_ROLES = {name for name, value in ROLE.items() if value > 0}
 
 # HTTP -> OP mapping (tweak as needed)
 METHOD_TO_OP = {
@@ -69,9 +81,6 @@ METHOD_TO_OP = {
     "PATCH": "UPDATE",
     "DELETE": "REMOVE",
 }
-
-# Roles allowed to receive acknowledgements
-ALLOWED_ACK_ROLES = {"Fog", "Edge"}
 
 # Where we persist our resource->policy index
 POLICY_INDEX_FILE = os.path.join(os.path.dirname(__file__), "policy_index.json")
@@ -163,6 +172,8 @@ def _ops_mask(ops_csv_or_mask: str|int) -> int:
 
 def _ctx_schema_hex(ctx: str) -> str:
     c = (ctx or "").strip()
+    if not c:
+        return "0x" + ("0" * 64)
     if c.startswith("0x"):
         h = c[2:]
         if len(h) > 64:
@@ -173,11 +184,54 @@ def _ctx_schema_hex(ctx: str) -> str:
         return "0x" + _keccak(text=c).hex()
     except Exception:
         return c
+
+
+def _to_bytes32(s: str) -> bytes:
+    """Convert a string or 0x-hex to a 32-byte value for Solidity bytes32 params."""
+    if not s:
+        return b'\x00' * 32
+    c = s.strip()
+    if c.startswith("0x"):
+        h = c[2:]
+        if len(h) > 64:
+            raise ValueError("bytes32 too long")
+        return bytes.fromhex(h.rjust(64, "0"))
+    try:
+        from eth_utils import keccak as _keccak
+        return _keccak(text=c)
+    except Exception:
+        return c.encode("utf-8")[:32].ljust(32, b'\x00')
+
+
+def _normalize_w3_struct(result) -> Dict[str, Any]:
+    """Convert a web3.py struct/AttributeDict/tuple to a plain Python dict."""
+    if result is None:
+        return {}
+    if isinstance(result, dict):
+        out = {}
+        for k, v in result.items():
+            if isinstance(v, bytes):
+                out[k] = "0x" + v.hex()
+            elif isinstance(v, int):
+                out[k] = v
+            else:
+                out[k] = v
+        return out
+    if hasattr(result, '_asdict'):
+        return _normalize_w3_struct(dict(result._asdict()))
+    if hasattr(result, 'items'):
+        return _normalize_w3_struct(dict(result))
+    # raw tuple / list — return as-is
+    return result
     
 
     
 def _policy_cache_key(from_role: str, to_role: str, ops_mask: int, ctx: str) -> str:
     return f"{from_role}|{to_role}|{ops_mask}|{ctx}"
+
+
+def _invalid_policy_roles(*roles: str) -> List[str]:
+    return [role for role in roles if role not in VALID_POLICY_ROLES]
 
 
 
@@ -209,6 +263,8 @@ class Orchestrator:
         self._request_lock = threading.RLock()
         self._active_requests = 0
         self._policy_lock = threading.RLock()
+        self._grant_cache: dict = {}  # key: (from_sig, to_sig, method, resource_path) → (result_dict, expiry_epoch)
+        self._grant_cache_lock = threading.RLock()
         self._policy_poller_started = False
         self._policy_poller_lock = threading.Lock()
         self._policy_poll_block = 0
@@ -216,7 +272,6 @@ class Orchestrator:
         self._contract = None
         # default from (display only)
         pk = _json_load(self.prefunded_keys_json, {"prefunded_accounts":[]})
-        # after: pk = _json_load(self.prefunded_keys_json, {"prefunded_accounts":[]})
         node_details_path = os.path.join(self.root, "node-details.json")
         self.nd = _json_load(node_details_path, {})
         # Prefer the node-details address if present, else fallback to prefunded[0]
@@ -224,6 +279,8 @@ class Orchestrator:
         # --- intelligent validator listening / dedupe ---
         self._vlisten_lock = threading.Lock()
         self._vlisten_started = False
+        self._vlisten_lock_fd = None
+        self._vlisten_lock_path = self.repo_path / "data" / ".validator-listener.lock"
         self._voted_addrs = set()  
         self.local_node_tier = (self.nd.get("node_type") or registrar_role or "Unknown").strip().lower()
         self.local_node_id = (self.nd.get("node_id") or self.nd.get("id") or "").strip()
@@ -234,7 +291,12 @@ class Orchestrator:
             node_name=self.local_node_name,
             node_tier=self.local_node_tier,
         )
+        self._ack_status_lock = threading.RLock()
+        self._ack_status: Dict[str, Dict[str, Any]] = {}
+        self._accounts: List[Any] = []
+        self._nonce_lock = threading.Lock()
         self._init_web3_contract()
+        self._load_accounts()
         self._start_policy_cache_watcher()
 
     # ---------- low-level JS bridge ----------
@@ -247,11 +309,16 @@ class Orchestrator:
         # Default sender index for REAL runs (many scripts pick FROM_IDX)
         # Respect any explicit env passed in.
         merged_env = os.environ.copy()
+        if self.besu_rpc_url:
+            merged_env["BESU_RPC_URL"] = str(self.besu_rpc_url)
         if env:
             merged_env.update(env)
         if "FROM_IDX" not in merged_env:
             # fall back to 0 unless caller overrides
             merged_env["FROM_IDX"] = os.getenv("FROM_IDX", "0")
+        node_options = str(merged_env.get("NODE_OPTIONS") or "").strip()
+        if "--no-deprecation" not in node_options.split():
+            merged_env["NODE_OPTIONS"] = f"{node_options} --no-deprecation".strip()
 
         if os.getenv("ORCH_TRACE"):
             print("exec:", " ".join(cmd))
@@ -281,6 +348,92 @@ class Orchestrator:
         except Exception:
             self._w3 = None
             self._contract = None
+
+    def _load_accounts(self) -> None:
+        """Load signing accounts from prefunded_keys.json into self._accounts."""
+        if self._w3 is None or EthAccount is None:
+            return
+        try:
+            data = _json_load(self.prefunded_keys_json, {"prefunded_accounts": []})
+            self._accounts = []
+            for entry in data.get("prefunded_accounts", []):
+                pk = (entry.get("private_key") or "").strip()
+                if pk:
+                    if not pk.startswith("0x"):
+                        pk = "0x" + pk
+                    self._accounts.append(EthAccount.from_key(pk))
+        except Exception:
+            self._accounts = []
+
+    def _should_use_js(self) -> bool:
+        """Returns True if the JS bridge should be used instead of web3.py."""
+        if not os.getenv("REAL_INTERACT"):
+            return True
+        return bool(os.getenv("USE_JS_BRIDGE")) or self._contract is None or self._w3 is None or not self._accounts
+
+    def _w3_account(self, from_idx: Optional[int] = None) -> Any:
+        """Return the eth_account at the given index."""
+        idx = int(from_idx) if from_idx is not None else int(os.getenv("FROM_IDX", "0"))
+        if not self._accounts or idx >= len(self._accounts):
+            raise RuntimeError(f"No account at index {idx}")
+        return self._accounts[idx]
+
+    def _w3_call(self, contract_fn) -> Any:
+        """Execute a read-only eth_call. Raises RuntimeError on failure."""
+        try:
+            return contract_fn.call()
+        except Exception as e:
+            raise RuntimeError(str(e))
+
+    def _w3_send(self, contract_fn, from_idx: Optional[int] = None, gas: int = 3_000_000, gas_label: Optional[str] = None) -> Dict[str, Any]:
+        """Build, sign, and send a contract transaction. Returns receipt dict."""
+        acct = self._w3_account(from_idx)
+        with self._nonce_lock:
+            nonce = self._w3.eth.get_transaction_count(acct.address, "pending")
+            tx = contract_fn.build_transaction({
+                "from": acct.address,
+                "gas": gas,
+                "gasPrice": 0,
+                "nonce": nonce,
+            })
+        signed = self._w3.eth.account.sign_transaction(tx, acct.key)
+        tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.01)
+        receipt_dict = dict(receipt)
+        if int(receipt_dict.get("status", 1) or 0) == 0:
+            raise RuntimeError(f"transaction_reverted:{self._receipt_tx_hash(receipt_dict)}")
+        if gas_label:
+            self._append_gas_log(gas_label, receipt_dict)
+        return receipt_dict
+
+    def _w3_rpc(self, method: str, params: list) -> Any:
+        """Raw JSON-RPC call for non-contract methods (e.g. QBFT admin)."""
+        return self._rpc_call(self.besu_rpc_url, method, params)
+
+    def _append_gas_log(self, gas_label: str, receipt: Dict[str, Any]) -> None:
+        """Append a gas usage entry to results/gas_log.jsonl."""
+        try:
+            gas_log_path = self.results_dir / "gas_log.jsonl"
+            tx_hash_raw = receipt.get("transactionHash", b"")
+            tx_hash_str = ("0x" + tx_hash_raw.hex()) if isinstance(tx_hash_raw, bytes) else str(tx_hash_raw)
+            entry = {
+                "function": gas_label,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "blockNumber": int(receipt.get("blockNumber") or 0),
+                "gasUsed": int(receipt.get("gasUsed") or 0),
+                "transactionHash": tx_hash_str,
+            }
+            with open(gas_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
+
+    def _receipt_tx_hash(self, receipt: Dict[str, Any]) -> str:
+        """Extract a 0x-prefixed hex tx hash string from a web3.py receipt."""
+        raw = receipt.get("transactionHash", b"")
+        if isinstance(raw, bytes):
+            return "0x" + raw.hex()
+        return str(raw)
 
     def begin_request(self, node_tier: Optional[str]=None, condition: Optional[str]=None) -> None:
         tier = (node_tier or self.local_node_tier or "unknown").strip().lower()
@@ -462,6 +615,127 @@ class Orchestrator:
         match = re.search(r"0x[a-fA-F0-9]{64}", text or "")
         return match.group(0) if match else ""
 
+    def _clean_address(self, value: str) -> str:
+        text = str(value or "")
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+        match = re.search(r"0x[a-fA-F0-9]{40}", text)
+        return match.group(0) if match else text.strip()
+
+    def _ack_key(self, payload: Dict[str, Any]) -> str:
+        return str(payload.get("signature") or payload.get("node_id") or uuid.uuid4().hex)
+
+    def _record_ack_status(self, key: str, **updates: Any) -> None:
+        with self._ack_status_lock:
+            current = dict(self._ack_status.get(key) or {})
+            current.update(updates)
+            current["updated_at_ms"] = int(time.time() * 1000)
+            self._ack_status[key] = current
+
+    def ack_status(self, payload_or_key: Dict[str, Any] | str) -> Dict[str, Any] | None:
+        key = payload_or_key if isinstance(payload_or_key, str) else self._ack_key(payload_or_key)
+        with self._ack_status_lock:
+            current = self._ack_status.get(str(key))
+            return dict(current) if current else None
+
+    def _dispatch_acknowledgement(self, payload: Dict[str, Any], *, tx_out: str | None) -> Dict[str, Any]:
+        role = str(payload.get("node_type") or "").strip()
+        ack_url = str(payload.get("ack_url") or payload.get("node_url") or "").rstrip("/")
+        ack_key = self._ack_key(payload)
+        if role not in ALLOWED_ACK_ROLES:
+            status = {"ack_required": False, "ack_status": "not_needed", "ack_sent": False}
+            self._record_ack_status(ack_key, node_id=payload.get("node_id"), role=role, **status)
+            return status
+        if not ack_url or not ack_url.startswith(("http://", "https://")):
+            self.emit_event(
+                component="orchestrator",
+                stage="acknowledgement_failed",
+                status="error",
+                message="Bootstrap acknowledgement skipped because the node URL is unavailable",
+                details={"ack_url": ack_url or None},
+                from_signature=payload.get("signature"),
+                tx_hash=tx_out,
+            )
+            status = {"ack_required": True, "ack_status": "skipped", "ack_sent": False}
+            self._record_ack_status(ack_key, node_id=payload.get("node_id"), role=role, **status)
+            return status
+        self.emit_event(
+            component="orchestrator",
+            stage="acknowledgement_queued",
+            status="started",
+            message="Bootstrap acknowledgement queued",
+            details={"ack_url": ack_url},
+            from_signature=payload.get("signature"),
+            tx_hash=tx_out,
+        )
+        self._record_ack_status(
+            ack_key,
+            node_id=payload.get("node_id"),
+            role=role,
+            ack_required=True,
+            ack_status="queued",
+            ack_sent=False,
+            attempts=0,
+        )
+        worker = threading.Thread(
+            target=self._run_acknowledgement_job,
+            kwargs={"payload": dict(payload), "ack_url": ack_url, "tx_out": tx_out, "ack_key": ack_key},
+            daemon=True,
+            name=f"ack-{payload.get('node_id') or ack_key}",
+        )
+        worker.start()
+        return {"ack_required": True, "ack_status": "queued", "ack_sent": False}
+
+    def _run_acknowledgement_job(self, *, payload: Dict[str, Any], ack_url: str, tx_out: str | None, ack_key: str) -> None:
+        role = str(payload.get("node_type") or "").strip()
+        bootstrap_base_url = str(payload.get("bootstrap_base_url") or "").rstrip("/")
+        sender = AcknowledgementSender(
+            registering_node_url=ack_url,
+            genesis_file=self.genesis_file_path,
+            node_registry_file=self.node_registry_json,
+            besu_rpc_url=self.besu_rpc_url,
+            prefunded_keys_file=self.prefunded_keys_json,
+            bootstrap_base_url=bootstrap_base_url,
+        )
+        retry_delays = [0.0, 0.5, 1.5, 3.0]
+        total_attempts = len(retry_delays)
+        for attempt, delay in enumerate(retry_delays, start=1):
+            if delay:
+                time.sleep(delay)
+            self._record_ack_status(ack_key, ack_status="sending", attempts=attempt, ack_sent=False)
+            self.emit_event(
+                component="orchestrator",
+                stage="acknowledgement_send",
+                status="started",
+                message=f"Sending bootstrap acknowledgement (attempt {attempt}/{total_attempts})",
+                details={"ack_url": ack_url, "attempt": attempt, "bootstrap_base_url": bootstrap_base_url},
+                from_signature=payload.get("signature"),
+                tx_hash=tx_out,
+            )
+            ack_sent = sender.send_acknowledgment(str(payload.get("node_id") or ""), node_type=role)
+            if ack_sent:
+                self._record_ack_status(ack_key, ack_status="completed", attempts=attempt, ack_sent=True)
+                self.emit_event(
+                    component="orchestrator",
+                    stage="acknowledgement_completed",
+                    status="ok",
+                    message="Bootstrap acknowledgement completed",
+                    details={"ack_url": ack_url, "attempt": attempt},
+                    from_signature=payload.get("signature"),
+                    tx_hash=tx_out,
+                )
+                return
+            terminal = attempt == total_attempts
+            self._record_ack_status(ack_key, ack_status="failed" if terminal else "retrying", attempts=attempt, ack_sent=False)
+            self.emit_event(
+                component="orchestrator",
+                stage="acknowledgement_failed" if terminal else "acknowledgement_send",
+                status="error" if terminal else "waiting",
+                message="Bootstrap acknowledgement failed" if terminal else "Bootstrap acknowledgement attempt failed; retry queued",
+                details={"ack_url": ack_url, "attempt": attempt, "next_retry_delay_secs": retry_delays[attempt] if attempt < total_attempts else 0},
+                from_signature=payload.get("signature"),
+                tx_hash=tx_out,
+            )
+
     def _rpc_call(self, rpc_url: str, method: str, params: list[Any]) -> Any:
         payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
         resp = requests.post(rpc_url, json=payload, timeout=10)
@@ -562,6 +836,11 @@ class Orchestrator:
                 self.policy_index.pop(key, None)
             if stale_keys:
                 self._save_policy_index()
+        # Evict matching grant cache entries
+        with self._grant_cache_lock:
+            evict = [k for k, (v, _) in self._grant_cache.items() if int(v.get("policyId") or 0) in policy_id_set]
+            for k in evict:
+                self._grant_cache.pop(k, None)
 
     def _policy_cache_watcher_loop(self) -> None:
         if not self._contract or not self._w3:
@@ -612,11 +891,18 @@ class Orchestrator:
 
     def find_policy_id(self, from_role: str, to_role: str, ops_csv: str, ctx_schema_str: str) -> Dict[str, Any]:
         """
-        JS bridge: node interact.js findPolicyId <fromRole> <toRole> <opsCsv|mask> <ctxSchemaStr>
         Returns {'ok': bool, 'stdout': str, 'stderr': str}
         """
-        r = self._js("findPolicyId", from_role, to_role, ops_csv, ctx_schema_str)
-        return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        if self._should_use_js():
+            r = self._js("findPolicyId", from_role, to_role, ops_csv, ctx_schema_str)
+            return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        try:
+            pid = self._find_policy_on_chain(from_role, to_role, ops_csv, ctx_schema_str)
+            if pid:
+                return {"ok": True, "stdout": str(pid), "stderr": ""}
+            return {"ok": False, "stdout": "", "stderr": "not_found"}
+        except Exception as exc:
+            return {"ok": False, "stdout": "", "stderr": str(exc)}
     
     # ---- validator/address helpers ----
     def get_address_from_signature(self, signature: str) -> str:
@@ -674,47 +960,15 @@ class Orchestrator:
         Preferred single source: check live set using the resolved address.
         """
         return self.checkValidator()
-    
 
-
-    def start_listener_when_becomes_validator(self, my_signature: str, max_wait_sec: int = 300, step: int = 5):
-        """
-        Polls for up to ~5 minutes for this node to become a validator; starts the listener once it is.
-        Non-blocking: runs in a daemon thread.
-        """
-        def _wait():
-            waited = 0
-            flow_id = self._new_flow_id("validator")
-            self.emit_event(
-                component="validator_listener",
-                flow_type="validator",
-                flow_id=flow_id,
-                stage="validator_wait",
-                status="waiting",
-                message="Waiting for this node to become a validator before starting the listener",
-                from_signature=my_signature,
-            )
-            while waited < max_wait_sec and not self._vlisten_started:
-                try:
-                    if self.is_validator():
-                        self.start_validator_listener()
-                        self.emit_event(
-                            component="validator_listener",
-                            flow_type="validator",
-                            flow_id=flow_id,
-                            stage="validator_wait",
-                            status="ok",
-                            message="This node became a validator",
-                            from_signature=my_signature,
-                        )
-                        return
-                except Exception:
-                    pass
-                time.sleep(step)
-                waited += step
-        threading.Thread(target=_wait, name="validator-listener-wait", daemon=True).start()
-
-    def _propose_and_vote(self, addr: str, voter_indices: list[int] | None = None) -> bool:
+    def _propose_and_vote(
+        self,
+        addr: str,
+        voter_indices: list[int] | None = None,
+        *,
+        flow_id: str | None = None,
+        from_signature: str | None = None,
+    ) -> bool:
         """
         Emit on-chain proposal event (optional) and submit qbft votes from multiple signers.
         Returns True if at least one vote RPC returned OK (not a guarantee of inclusion).
@@ -729,12 +983,6 @@ class Orchestrator:
                 return True
             self._voted_addrs.add(addr_lc)
 
-        # # Optional "intent" event for audit/history
-        # try:
-        #     self.propose_validator(addr)
-        # except Exception as e:
-        #     print(f"[propose] propose_validator event emit failed (continuing): {e}")
-
         ok_any = False
         if voter_indices is None:
             # Try a few; tune to your setup / threshold
@@ -742,24 +990,121 @@ class Orchestrator:
 
         for idx in voter_indices:
             try:
-                out = self.proposeValidatorVote(addr, "true")
+                out = self.proposeValidatorVote(addr, "true", from_idx=idx)
                 print("________")
                 print(f"[propose] qbft vote yes FROM_IDX={idx}: {out.strip()}")
                 self.emit_event(
                     component="validator_listener",
                     flow_type="validator",
-                    flow_id=self.current_flow_id() or self._new_flow_id("validator"),
+                    flow_id=flow_id or self.current_flow_id() or self._new_flow_id("validator"),
                     stage="validator_vote_submitted",
                     status="ok",
                     message="Validator vote submitted",
                     details={"address": addr, "from_idx": idx},
                     tx_hash=self._extract_tx_hash(out),
+                    from_signature=from_signature,
                 )
                 ok_any = True
             except Exception as e:
                 print(f"[propose] vote error FROM_IDX={idx}: {e}")
 
         return ok_any
+
+    def _promote_validator_async(
+        self,
+        payload: Dict[str, Any],
+        *,
+        from_signature: str,
+        voter_indices: list[int] | None = None,
+        peer_wait_seconds: int = 5,
+    ) -> str | None:
+        addr = self._clean_address(payload.get("address") or "")
+        if not addr:
+            return None
+
+        flow_id = self._new_flow_id("validator")
+
+        def _worker():
+            included = False
+            try:
+                cur = self._normalize_validators(self.qbft_get_validators())
+                if addr.lower() in cur:
+                    included = True
+                    self.emit_event(
+                        component="validator_listener",
+                        flow_type="validator",
+                        flow_id=flow_id,
+                        stage="validator_inclusion_result",
+                        status="ok",
+                        message="Validator inclusion observed",
+                        details={"address": addr},
+                        from_signature=from_signature,
+                    )
+                    return
+
+                self.start_validator_listener()
+                self.emit_event(
+                    component="validator_listener",
+                    flow_type="validator",
+                    flow_id=flow_id,
+                    stage="validator_vote",
+                    status="started",
+                    message="Submitting validator vote",
+                    details={"address": addr},
+                    from_signature=from_signature,
+                )
+                voted = self._propose_and_vote(
+                    addr,
+                    voter_indices=voter_indices,
+                    flow_id=flow_id,
+                    from_signature=from_signature,
+                )
+                self.emit_event(
+                    component="validator_listener",
+                    flow_type="validator",
+                    flow_id=flow_id,
+                    stage="validator_vote",
+                    status="ok" if voted else "error",
+                    message="Validator vote completed" if voted else "Validator vote failed",
+                    details={"address": addr},
+                    from_signature=from_signature,
+                )
+                if voted:
+                    for sec in (1, 1, 2, 3, 5, 8):
+                        time.sleep(sec)
+                        cur = self._normalize_validators(self.qbft_get_validators())
+                        if addr.lower() in cur:
+                            included = True
+                            break
+
+                self.emit_event(
+                    component="validator_listener",
+                    flow_type="validator",
+                    flow_id=flow_id,
+                    stage="validator_inclusion_result",
+                    status="ok" if included else ("waiting" if voted else "error"),
+                    message="Validator inclusion observed" if included else ("Validator vote submitted and inclusion is pending" if voted else "Validator vote failed"),
+                    details={"address": addr},
+                    from_signature=from_signature,
+                )
+            except Exception as exc:
+                self.emit_event(
+                    component="validator_listener",
+                    flow_type="validator",
+                    flow_id=flow_id,
+                    stage="validator_inclusion_result",
+                    status="error",
+                    message="Validator promotion failed",
+                    details={"address": addr, "detail": str(exc)},
+                    from_signature=from_signature,
+                )
+
+        threading.Thread(
+            target=_worker,
+            name=f"validator-promotion-{addr[-6:]}",
+            daemon=True,
+        ).start()
+        return flow_id
     
     def _normalize_validators(self, raw) -> list[str]:
         # raw may be a CSV/string like "['0x..','0x..']" or a list
@@ -775,15 +1120,21 @@ class Orchestrator:
         return [str(p).strip().lower() for p in parts]
 
     def peer_count(self) -> int:
-        r = self._js("peerCount")
-        if not r.ok:
-            return 0
+        if self._should_use_js():
+            r = self._js("peerCount")
+            if not r.ok:
+                return 0
+            try:
+                return int((r.stdout or "0").strip())
+            except Exception:
+                return 0
         try:
-            return int((r.stdout or "0").strip())
+            result = self._w3_rpc("net_peerCount", [])
+            return int(str(result), 16) if isinstance(result, str) and result.startswith("0x") else int(result or 0)
         except Exception:
             return 0
 
-    def _wait_for_peer_bump(self, max_wait_sec: int = 90, step: int = 5) -> None:
+    def _wait_for_peer_bump(self, max_wait_sec: int = 20, step: int = 1) -> bool:
         """Wait (bounded) for any peer increase to indicate the joining node connected."""
         base = self.peer_count()
         waited = 0
@@ -791,29 +1142,44 @@ class Orchestrator:
             time.sleep(step)
             waited += step
             if self.peer_count() > base:
-                break  # good enough 
-    # ---------- perf-measured wrappers for interact.js ----------
+                return True
+        return False
+    # ---------- blockchain contract wrappers (web3.py primary, JS mock fallback in tests) ----------
 
     #@track_performance
     def check_if_deployed(self) -> bool:
-        r = self._js("checkIfDeployed")
-        print(f"check_if_deployed: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        b = _parse_bool(r.stdout)
-        return bool(b)
+        if self._should_use_js():
+            r = self._js("checkIfDeployed")
+            stderr_text = r.stderr or ""
+            transient_rpc_error = "ECONNREFUSED" in stderr_text or "connect refused" in stderr_text.lower()
+            if os.getenv("ORCH_TRACE") and (r.ok or not transient_rpc_error):
+                print(f"check_if_deployed: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
+            if not r.ok:
+                if transient_rpc_error:
+                    raise RuntimeError("rpc_not_ready")
+                raise RuntimeError(stderr_text or r.stdout)
+            b = _parse_bool(r.stdout)
+            return bool(b)
+        try:
+            code = self._w3.eth.get_code(self._contract.address)
+            return bool(code and len(code) > 2)
+        except Exception as e:
+            err = str(e)
+            if "ECONNREFUSED" in err or "connect refused" in err.lower():
+                raise RuntimeError("rpc_not_ready")
+            raise RuntimeError(err)
 
     #@track_performance
     def is_node_registered(self, node_sig: str) -> bool:
-        r = self._js("isNodeRegistered", node_sig)
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        b = _parse_bool(r.stdout)
-        return bool(b)
+        if self._should_use_js():
+            r = self._js("isNodeRegistered", node_sig)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            b = _parse_bool(r.stdout)
+            return bool(b)
+        return bool(self._w3_call(self._contract.functions.isNodeRegistered(node_sig)))
 
     #@track_performance
     def register_node(self, node_id, node_name, node_type_str, public_key, registered_by_addr, rpcURL, registered_by_node_type_str, node_signature, from_idx: Optional[int]=None) -> str:
-        env = os.environ.copy()
-        if from_idx is not None:
-            env["FROM_IDX"] = str(from_idx)
         print("*******************************************************************************")
         print(f"[register_node] node_id={node_id}, node_name={node_name}, node_type={node_type_str}, public_key={public_key}, registered_by_addr={registered_by_addr}, rpcURL={rpcURL}, registered_by_node_type_str={registered_by_node_type_str}, node_signature={node_signature}")
         self.emit_event(
@@ -824,9 +1190,38 @@ class Orchestrator:
             details={"node_id": node_id, "node_name": node_name, "node_type": node_type_str, "rpc_url": rpcURL},
             from_signature=node_signature,
         )
-        r = self._js("registerNode", node_id, node_name, node_type_str, public_key, registered_by_addr, rpcURL, registered_by_node_type_str, node_signature)
-        print(f"[register_node] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        if self._should_use_js():
+            r = self._js("registerNode", node_id, node_name, node_type_str, public_key, registered_by_addr, rpcURL, registered_by_node_type_str, node_signature)
+            print(f"[register_node] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            self.record_operation_latency("registerNode")
+            self.emit_event(
+                component="blockchain",
+                stage="registration_submit",
+                status="ok",
+                message="Node registration transaction submitted",
+                details={"node_id": node_id},
+                tx_hash=self._extract_tx_hash(r.stdout),
+                from_signature=node_signature,
+            )
+            return r.stdout
+        # web3.py path: ABI-encode params then call registerNodePacked(bytes)
+        safe_addr = registered_by_addr or ("0x" + "0" * 40)
+        try:
+            safe_addr = Web3.to_checksum_address(safe_addr)
+        except Exception:
+            safe_addr = "0x" + "0" * 40
+        packed = eth_abi_encode(
+            ["string", "string", "string", "string", "address", "string", "string", "string"],
+            [node_id, node_name, node_type_str, public_key, safe_addr, rpcURL, registered_by_node_type_str, node_signature],
+        )
+        receipt = self._w3_send(
+            self._contract.functions.registerNodePacked(packed),
+            from_idx=from_idx, gas=3_000_000, gas_label="registerNode"
+        )
+        tx_hash = self._receipt_tx_hash(receipt)
+        tx_out = f"✅ registerNodePacked: {tx_hash}"
+        print(f"[register_node] web3 result: {tx_out}")
         self.record_operation_latency("registerNode")
         self.emit_event(
             component="blockchain",
@@ -834,31 +1229,49 @@ class Orchestrator:
             status="ok",
             message="Node registration transaction submitted",
             details={"node_id": node_id},
-            tx_hash=self._extract_tx_hash(r.stdout),
+            tx_hash=tx_hash,
             from_signature=node_signature,
         )
-        return r.stdout
+        return tx_out
 
     #@track_performance
     def get_node_by_sig(self, node_sig: str) -> Dict[str,Any]:
-        r = self._js("getNodeBySig", node_sig)
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        return json.loads(r.stdout)
+        if self._should_use_js():
+            r = self._js("getNodeBySig", node_sig)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            return json.loads(r.stdout)
+        r = self._w3_call(self._contract.functions.getNodeDetailsBySignature(node_sig))
+        return {
+            "nodeId": r[0],
+            "nodeName": r[1],
+            "nodeType": int(r[2]),
+            "publicKey": r[3],
+            "isRegistered": bool(r[4]),
+            "registeredBy": r[5],
+            "nodeSignature": r[6],
+            "registeredByNodeType": int(r[7]),
+        }
 
     #@track_performance
     def propose_validator(self, validator_addr: str, from_idx: Optional[int]=None) -> str:
-        env = os.environ.copy()
-        if from_idx is not None:
-            env["FROM_IDX"] = str(from_idx)
-        r = self._js("proposeValidator", validator_addr)
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        return r.stdout
+        validator_addr = self._clean_address(validator_addr)
+        if self._should_use_js():
+            r = self._js("proposeValidator", validator_addr)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            return r.stdout
+        receipt = self._w3_send(self._contract.functions.proposeValidator(validator_addr), from_idx=from_idx)
+        return f"✅ proposeValidator: {self._receipt_tx_hash(receipt)}"
 
     #@track_performance
     def qbft_get_validators(self) -> str:
-        r = self._js("qbft_getValidators")
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        return r.stdout
+        if self._should_use_js():
+            r = self._js("qbft_getValidators")
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            return r.stdout
+        result = self._w3_rpc("qbft_getValidatorsByBlockNumber", ["latest"])
+        if isinstance(result, list):
+            return json.dumps(result)
+        return str(result or "[]")
 
     #@track_performance
     def proposeValidatorVote(self, validator_addr: str, vote: str, from_idx: Optional[int]=None) -> str:
@@ -869,21 +1282,34 @@ class Orchestrator:
         :param from_idx: optional index to use for this operation
         :return: transaction hash or error message
         """
-        env = os.environ.copy()
-        if from_idx is not None:
-            env["FROM_IDX"] = str(from_idx)
-        r = self._js("proposeValidatorVote", validator_addr, vote, env=env)
-
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        return r.stdout
+        validator_addr = self._clean_address(validator_addr)
+        if self._should_use_js():
+            env = os.environ.copy()
+            if from_idx is not None:
+                env["FROM_IDX"] = str(from_idx)
+            r = self._js("proposeValidatorVote", validator_addr, vote, env=env)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            return r.stdout
+        add = vote.strip().lower() in ("true", "yes", "1")
+        result = self._w3_rpc("qbft_proposeValidatorVote", [validator_addr, add])
+        return json.dumps({"result": result})
 
     # ---- policy & msig ----
 
     #@track_performance
     def msig_info(self) -> Dict[str,Any]:
-        r = self._js("msigInfo")
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        return json.loads(r.stdout)
+        if self._should_use_js():
+            r = self._js("msigInfo")
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            return json.loads(r.stdout)
+        required = self._w3_call(self._contract.functions.msigRequired())
+        count = self._w3_call(self._contract.functions.msigApproverCount())
+        threshold = self._w3_call(self._contract.functions.msigThreshold())
+        return {
+            "msigRequired": bool(required),
+            "msigApproverCount": int(count),
+            "msigThreshold": int(threshold),
+        }
 
     #@track_performance
     #@track_performance
@@ -893,12 +1319,20 @@ class Orchestrator:
         return ok=True without sending a tx (idempotent).
         """
         ctx = ctx_schema or ""  # contract allows empty ctx; we match what caller passed
+        invalid_roles = _invalid_policy_roles(from_role, to_role)
+        if invalid_roles:
+            allowed = ", ".join(sorted(VALID_POLICY_ROLES))
+            return {
+                "ok": False,
+                "stdout": "",
+                "stderr": f"invalid_policy_roles:{', '.join(invalid_roles)} (allowed: {allowed})",
+            }
 
         # 0) Preflight: if policy already exists on-chain, don't call createPolicy
         try:
             existing_pid = self._find_policy_on_chain(from_role, to_role, ops_csv, ctx)
-            print(f"[create_policy] found existing policyId={existing_pid} for {from_role}->{to_role} with ops={ops_csv} and ctx={ctx}")
             if existing_pid:
+                print(f"[create_policy] found existing policyId={existing_pid} for {from_role}->{to_role} with ops={ops_csv} and ctx={ctx}")
                 # mimic a successful create; stdout clarifies "exists"
                 return {"ok": True, "stdout": f"exists:{existing_pid}", "stderr": ""}
         except Exception:
@@ -906,45 +1340,150 @@ class Orchestrator:
             pass
 
         # 1) Create on-chain
-        env = os.environ.copy()
-        if from_idx is not None:
-            env["FROM_IDX"] = str(from_idx)
+        if self._should_use_js():
+            env = os.environ.copy()
+            if from_idx is not None:
+                env["FROM_IDX"] = str(from_idx)
+            args = ["createPolicy", from_role, to_role, ops_csv]
+            if ctx_schema:
+                args.append(ctx_schema)
+            r = self._js(*args, env=env)
+            print(f"[create_policy] createPolicy result: {r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
+            return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        try:
+            from_role_num = ROLE.get(from_role, 0)
+            to_role_num = ROLE.get(to_role, 0)
+            ops = _ops_mask(ops_csv)
+            schema = _to_bytes32(ctx_schema or "")
+            receipt = self._w3_send(
+                self._contract.functions.createPolicy(from_role_num, to_role_num, ops, schema),
+                from_idx=from_idx, gas=3_000_000, gas_label="createPolicy"
+            )
+            tx_hash = self._receipt_tx_hash(receipt)
+            # Extract policyId directly from PolicyCreated event — avoids polling loop in ensure_policy
+            pid_from_event = None
+            try:
+                evts = self._contract.events.PolicyCreated().process_receipt(receipt)
+                if evts:
+                    pid_from_event = int(evts[0]["args"]["policyId"])
+            except Exception:
+                pass
+            if pid_from_event is not None:
+                import json as _json
+                print(f"[create_policy] web3 createPolicy tx={tx_hash} policyId={pid_from_event}")
+                return {"ok": True, "stdout": _json.dumps({"status": "created", "policyId": pid_from_event, "txHash": tx_hash}), "stderr": ""}
+            print(f"[create_policy] web3 createPolicy tx={tx_hash}")
+            return {"ok": True, "stdout": tx_hash, "stderr": ""}
+        except Exception as e:
+            return {"ok": False, "stdout": "", "stderr": str(e)}
 
-        args = ["createPolicy", from_role, to_role, ops_csv]
-        if ctx_schema:  # only append if provided
-            args.append(ctx_schema)
+    def update_policy(self, policy_id: int, ops_csv: str, ctx_schema: Optional[str] = None, from_idx: Optional[int] = None) -> Dict[str, Any]:
+        if self._should_use_js():
+            env = os.environ.copy()
+            if from_idx is not None:
+                env["FROM_IDX"] = str(from_idx)
+            args = ["updatePolicy", str(int(policy_id)), ops_csv]
+            if ctx_schema:
+                args.append(ctx_schema)
+            r = self._js(*args, env=env)
+            return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        try:
+            ops = _ops_mask(ops_csv)
+            schema = _to_bytes32(ctx_schema or "")
+            receipt = self._w3_send(
+                self._contract.functions.updatePolicy(int(policy_id), ops, schema),
+                from_idx=from_idx
+            )
+            return {"ok": True, "stdout": self._receipt_tx_hash(receipt), "stderr": ""}
+        except Exception as e:
+            return {"ok": False, "stdout": "", "stderr": str(e)}
 
-        r = self._js(*args, env=env)
-        print(f"[create_policy] createPolicy result: {r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
-        return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+    def deprecate_policy(self, policy_id: int, from_idx: Optional[int] = None) -> Dict[str, Any]:
+        if self._should_use_js():
+            env = os.environ.copy()
+            if from_idx is not None:
+                env["FROM_IDX"] = str(from_idx)
+            r = self._js("deprecatePolicy", str(int(policy_id)), env=env)
+            return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        try:
+            receipt = self._w3_send(
+                self._contract.functions.deprecatePolicy(int(policy_id)),
+                from_idx=from_idx
+            )
+            return {"ok": True, "stdout": self._receipt_tx_hash(receipt), "stderr": ""}
+        except Exception as e:
+            return {"ok": False, "stdout": "", "stderr": str(e)}
+
+    def policy_admin(self) -> str:
+        if self._should_use_js():
+            r = self._js("policyAdmin")
+            if not r.ok:
+                raise RuntimeError(r.stderr or r.stdout)
+            return str(r.stdout or "").strip()
+        return str(self._w3_call(self._contract.functions.policyAdmin()))
 
     #@track_performance
     def approve_create_policy(self, from_role: str, to_role: str, ops_csv: str, ctx_schema: Optional[str]=None, from_idx: Optional[int]=None) -> Dict[str,Any]:
-        env = os.environ.copy()
-        if from_idx is not None:
-            env["FROM_IDX"] = str(from_idx)
-        args = ["approveCreatePolicy", from_role, to_role, ops_csv]
-        if ctx_schema: args.append(ctx_schema)
-        r = self._js(*args, env=env)
-        return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        if self._should_use_js():
+            env = os.environ.copy()
+            if from_idx is not None:
+                env["FROM_IDX"] = str(from_idx)
+            args = ["approveCreatePolicy", from_role, to_role, ops_csv]
+            if ctx_schema: args.append(ctx_schema)
+            r = self._js(*args, env=env)
+            return {"ok": r.ok, "stdout": r.stdout, "stderr": r.stderr}
+        try:
+            from_role_num = ROLE.get(from_role, 0)
+            to_role_num = ROLE.get(to_role, 0)
+            ops = _ops_mask(ops_csv)
+            schema = _to_bytes32(ctx_schema or "")
+            receipt = self._w3_send(
+                self._contract.functions.approveCreatePolicy(from_role_num, to_role_num, ops, schema),
+                from_idx=from_idx, gas=3_000_000, gas_label="approvePolicy"
+            )
+            return {"ok": True, "stdout": self._receipt_tx_hash(receipt), "stderr": ""}
+        except Exception as e:
+            return {"ok": False, "stdout": "", "stderr": str(e)}
 
     #@track_performance
+    _POLICY_FIELDS = ("fromRole", "toRole", "opsAllowed", "isDeprecated", "ctxSchema", "policyHash", "version")
+
     def get_policy(self, policy_id: int) -> Dict[str,Any]:
-        r = self._js("getPolicy", policy_id)
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-        return json.loads(r.stdout)
+        if self._should_use_js():
+            r = self._js("getPolicy", policy_id)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            return json.loads(r.stdout)
+        p = self._w3_call(self._contract.functions.getPolicy(int(policy_id)))
+        # web3.py returns a raw tuple when ABI uses a struct — map to dict
+        if isinstance(p, (tuple, list)) and not hasattr(p, 'items') and not hasattr(p, '_asdict'):
+            result = {}
+            for i, field in enumerate(self._POLICY_FIELDS):
+                if i < len(p):
+                    v = p[i]
+                    result[field] = ("0x" + v.hex()) if isinstance(v, bytes) else v
+        else:
+            result = _normalize_w3_struct(p)
+        # Ensure integer types for numeric fields
+        for k in ("fromRole", "toRole", "opsAllowed", "version"):
+            if k in result:
+                result[k] = int(result[k])
+        return result
     
     def _find_policy_on_chain(self, from_role: str, to_role: str, ops_csv: str, ctx: str):
         """
         Return an existing policyId if a policy matches (from_role,to_role,ops_mask,ctx).
-        Uses nextPolicyId + getPolicy to scan existing policies.
+        Uses the contract's latest created policy id + getPolicy to scan existing policies.
         """
-        # nextPolicyId
-        np = self._js("nextPolicyId")
-        if not np.ok:
-            return None
+        # Note: the Solidity contract's `nextPolicyId` variable is actually the
+        # latest allocated policy id, not the next free id.
         try:
-            next_id = int((np.stdout or "0").strip() or 0)
+            if not self._should_use_js():
+                latest_id = int(self._w3_call(self._contract.functions.nextPolicyId()))
+            else:
+                np = self._js("nextPolicyId")
+                if not np.ok:
+                    return None
+                latest_id = int((np.stdout or "0").strip() or 0)
         except Exception:
             return None
 
@@ -954,9 +1493,8 @@ class Orchestrator:
         want_to   = ROLE.get(to_role, 0)
         want_ops  = _ops_mask(ops_csv)
         want_ctx  = _ctx_schema_hex(ctx)  # <<— normalize to on-chain bytes32
-        # print(f"[+++++++++WANT FROM: {want_from}] [WANT TO: {want_to}] [WANT OPS={want_ops}] [WANT CTX={want_ctx}]")
 
-        for pid in range(1, max(1, next_id)):
+        for pid in range(1, max(0, latest_id) + 1):
             try:
                 gp = self.get_policy(pid)
                 if int(gp.get("version", 0)) <= 0:
@@ -999,9 +1537,28 @@ class Orchestrator:
             to_signature=to_sig,
             details={"ops": ops_csv, "expires_at": expires_at},
         )
-        r = self._js("issueGrant", from_sig, to_sig, policy_id, ops_csv, expires_at, env=env)
-        print(f"[issue_grant] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        if self._should_use_js():
+            r = self._js("issueGrant", from_sig, to_sig, policy_id, ops_csv, expires_at, env=env)
+            print(f"[issue_grant] result: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            self.record_operation_latency("issueToken")
+            self.emit_event(
+                component="blockchain",
+                stage="issue_grant_submit",
+                status="ok",
+                message="Capability token issued",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+                tx_hash=self._extract_tx_hash(r.stdout),
+            )
+            return r.stdout
+        ops = _ops_mask(ops_csv)
+        receipt = self._w3_send(
+            self._contract.functions.issueGrant(from_sig, to_sig, int(policy_id), ops, int(expires_at)),
+            from_idx=from_idx, gas=3_000_000, gas_label="issueToken"
+        )
+        tx_hash = self._receipt_tx_hash(receipt)
         self.record_operation_latency("issueToken")
         self.emit_event(
             component="blockchain",
@@ -1011,9 +1568,9 @@ class Orchestrator:
             policy_id=policy_id,
             from_signature=from_sig,
             to_signature=to_sig,
-            tx_hash=self._extract_tx_hash(r.stdout),
+            tx_hash=tx_hash,
         )
-        return r.stdout
+        return f"✅ issueGrant: {tx_hash}"
 
     #@track_performance
     def issue_grant_delegable(self, from_sig: str, to_sig: str, policy_id: int, ops_csv: str, expires_at: int, delegation_allowed: bool, delegation_depth: int, from_idx: Optional[int]=None) -> str:
@@ -1031,8 +1588,30 @@ class Orchestrator:
             to_signature=to_sig,
             details={"ops": ops_csv, "expires_at": expires_at, "delegation_allowed": delegation_allowed, "delegation_depth": delegation_depth},
         )
-        r = self._js("issueGrantDelegable", from_sig, to_sig, policy_id, ops_csv, expires_at, allow, delegation_depth, env=env)
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        if self._should_use_js():
+            r = self._js("issueGrantDelegable", from_sig, to_sig, policy_id, ops_csv, expires_at, allow, delegation_depth, env=env)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            self.record_operation_latency("issueTokenDelegable")
+            self.emit_event(
+                component="blockchain",
+                stage="issue_delegable_grant_submit",
+                status="ok",
+                message="Delegable capability token issued",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+                tx_hash=self._extract_tx_hash(r.stdout),
+            )
+            return r.stdout
+        ops = _ops_mask(ops_csv)
+        allow_bool = delegation_allowed if isinstance(delegation_allowed, bool) else (str(allow).lower() in ("true", "1"))
+        receipt = self._w3_send(
+            self._contract.functions.issueGrantDelegable(
+                from_sig, to_sig, int(policy_id), ops, int(expires_at), allow_bool, int(delegation_depth)
+            ),
+            from_idx=from_idx, gas=3_000_000, gas_label="issueTokenDelegable"
+        )
+        tx_hash = self._receipt_tx_hash(receipt)
         self.record_operation_latency("issueTokenDelegable")
         self.emit_event(
             component="blockchain",
@@ -1042,12 +1621,12 @@ class Orchestrator:
             policy_id=policy_id,
             from_signature=from_sig,
             to_signature=to_sig,
-            tx_hash=self._extract_tx_hash(r.stdout),
+            tx_hash=tx_hash,
         )
-        return r.stdout
+        return f"✅ issueGrantDelegable: {tx_hash}"
 
     #@track_performance
-    def delegate_grant(self, current_from_sig: str, to_sig: str, new_from_sig: str, ops_csv: str, expires_at: int, from_idx: Optional[int]=None) -> str:
+    def delegate_grant(self, current_from_sig: str, to_sig: str, new_from_sig: str, ops_csv: str, expires_at: int, from_idx: Optional[int]=None, policy_id: Optional[int]=None) -> str:
         env = os.environ.copy()
         if from_idx is not None:
             env["FROM_IDX"] = str(from_idx)
@@ -1060,14 +1639,38 @@ class Orchestrator:
             to_signature=to_sig,
             details={"child_from_signature": new_from_sig, "ops": ops_csv, "expires_at": expires_at},
         )
-        if os.getenv("REAL_INTERACT"):
-            policy_id = self._resolve_grant_policy_id(current_from_sig, to_sig)
-            if policy_id is None:
-                raise RuntimeError("grant_policy_id_unknown")
-            r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, policy_id, ops_csv, expires_at, env=env)
-        else:
-            r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, ops_csv, expires_at, env=env)
-        if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+        if self._should_use_js():
+            if os.getenv("REAL_INTERACT"):
+                policy_id = policy_id if policy_id is not None else self._resolve_grant_policy_id(current_from_sig, to_sig)
+                if policy_id is None:
+                    raise RuntimeError("grant_policy_id_unknown")
+                r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, policy_id, ops_csv, expires_at, env=env)
+            else:
+                r = self._js("delegateGrant", current_from_sig, to_sig, new_from_sig, ops_csv, expires_at, env=env)
+            if not r.ok: raise RuntimeError(r.stderr or r.stdout)
+            self.record_operation_latency("delegateToken")
+            self.emit_event(
+                component="blockchain",
+                stage="delegation_submit",
+                status="ok",
+                message="Delegation transaction submitted",
+                from_signature=current_from_sig,
+                to_signature=to_sig,
+                tx_hash=self._extract_tx_hash(r.stdout),
+                details={"child_from_signature": new_from_sig},
+            )
+            return r.stdout
+        policy_id = policy_id if policy_id is not None else self._resolve_grant_policy_id(current_from_sig, to_sig)
+        if policy_id is None:
+            raise RuntimeError("grant_policy_id_unknown")
+        ops = _ops_mask(ops_csv)
+        receipt = self._w3_send(
+            self._contract.functions.delegateGrant(
+                current_from_sig, to_sig, new_from_sig, int(policy_id), ops, int(expires_at)
+            ),
+            from_idx=from_idx
+        )
+        tx_hash = self._receipt_tx_hash(receipt)
         self.record_operation_latency("delegateToken")
         self.emit_event(
             component="blockchain",
@@ -1076,10 +1679,10 @@ class Orchestrator:
             message="Delegation transaction submitted",
             from_signature=current_from_sig,
             to_signature=to_sig,
-            tx_hash=self._extract_tx_hash(r.stdout),
+            tx_hash=tx_hash,
             details={"child_from_signature": new_from_sig},
         )
-        return r.stdout
+        return f"✅ delegateGrant: {tx_hash}"
 
     #@track_performance
     def revoke_grant(self, from_sig: str, to_sig: str, policy_id: int, from_idx: Optional[int]=None) -> str:
@@ -1095,11 +1698,30 @@ class Orchestrator:
             from_signature=from_sig,
             to_signature=to_sig,
         )
-        r = self._js("revokeGrant", from_sig, to_sig, policy_id, env=env)
-        if not r.ok:
-            raise RuntimeError(r.stderr or r.stdout)
+        if self._should_use_js():
+            r = self._js("revokeGrant", from_sig, to_sig, policy_id, env=env)
+            if not r.ok:
+                raise RuntimeError(r.stderr or r.stdout)
+            self.record_operation_latency("revokeToken")
+            tx_hash = self._extract_tx_hash(r.stdout)
+            self.emit_event(
+                component="blockchain",
+                stage="revoke_submit",
+                status="ok",
+                message="Revocation transaction submitted",
+                policy_id=policy_id,
+                from_signature=from_sig,
+                to_signature=to_sig,
+                tx_hash=tx_hash,
+            )
+            self._measure_revocation_propagation(tx_hash)
+            return r.stdout
+        receipt = self._w3_send(
+            self._contract.functions.revokeGrant(from_sig, to_sig, int(policy_id)),
+            from_idx=from_idx, gas=3_000_000, gas_label="revokeToken"
+        )
+        tx_hash = self._receipt_tx_hash(receipt)
         self.record_operation_latency("revokeToken")
-        tx_hash = self._extract_tx_hash(r.stdout)
         self.emit_event(
             component="blockchain",
             stage="revoke_submit",
@@ -1111,34 +1733,51 @@ class Orchestrator:
             tx_hash=tx_hash,
         )
         self._measure_revocation_propagation(tx_hash)
-        return r.stdout
+        return f"✅ revokeGrant: {tx_hash}"
 
     def get_grant_ex(self, from_sig: str, to_sig: str, policy_id: int) -> Dict[str, Any]:
         print(f"[get_grant_ex] from_sig={from_sig}, to_sig={to_sig}, pid={policy_id}")
-        if os.getenv("REAL_INTERACT"):
-            r = self._js("getGrantEx", from_sig, to_sig, policy_id)
-        else:
-            r = self._js("getGrantEx", from_sig, to_sig)
-        if not r.ok:
-            raise RuntimeError(r.stderr or r.stdout)
-        return json.loads(r.stdout)
+        if self._should_use_js():
+            if os.getenv("REAL_INTERACT"):
+                r = self._js("getGrantEx", from_sig, to_sig, policy_id)
+            else:
+                r = self._js("getGrantEx", from_sig, to_sig)
+            if not r.ok:
+                raise RuntimeError(r.stderr or r.stdout)
+            return json.loads(r.stdout)
+        g = self._w3_call(self._contract.functions.getGrantEx(from_sig, to_sig, int(policy_id)))
+        ZERO32 = "0x" + "00" * 32
+        return {
+            "policyId": int(g[0]),
+            "opsSubset": int(g[1]),
+            "issuedAt": int(g[2]),
+            "expiresAt": int(g[3]),
+            "isIssued": bool(g[4]),
+            "isRevoked": bool(g[5]),
+            "delegationAllowed": bool(g[6]),
+            "delegationDepth": int(g[7]),
+            "depthDel": int(g[8] if len(g) > 8 else g[7]),
+            "parentTokenId": ("0x" + g[9].hex()) if len(g) > 9 and isinstance(g[9], bytes) else (g[9] if len(g) > 9 else ZERO32),
+        }
 
     def _resolve_grant_policy_id(self, from_sig: str, to_sig: str) -> Optional[int]:
-        try:
-            legacy = self._js("getGrantEx", from_sig, to_sig)
-            if legacy.ok and legacy.stdout:
-                payload = json.loads(legacy.stdout)
-                pid = int(payload.get("policyId", 0) or 0)
-                if pid > 0:
+        if self._should_use_js() and not os.getenv("REAL_INTERACT"):
+            try:
+                grant = self.get_grant_ex(from_sig, to_sig, 0)
+                pid = int(grant.get("policyId") or 0)
+                if pid > 0 and grant.get("isIssued"):
                     return pid
-        except Exception:
-            pass
-
-        np = self._js("nextPolicyId")
-        if not np.ok:
-            return None
+            except Exception:
+                pass
+        # Try nextPolicyId
         try:
-            next_id = int((np.stdout or "0").strip() or 0)
+            if not self._should_use_js():
+                next_id = int(self._w3_call(self._contract.functions.nextPolicyId()))
+            else:
+                np = self._js("nextPolicyId")
+                if not np.ok:
+                    return None
+                next_id = int((np.stdout or "0").strip() or 0)
         except Exception:
             return None
 
@@ -1210,22 +1849,41 @@ class Orchestrator:
             from_signature=from_sig,
             to_signature=to_sig,
         )
-        r = self._js("isGrantExpired", from_sig, to_sig, pid)
-        if r.ok:
-            expired = _parse_bool(r.stdout) is True
-            self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
-            self.emit_event(
-                component="blockchain",
-                stage="expiry_check",
-                status="ok",
-                message="Grant expiry evaluated",
-                policy_id=pid,
-                from_signature=from_sig,
-                to_signature=to_sig,
-                duration_ms=(time.monotonic() - start) * 1000,
-                details={"expired": expired},
-            )
-            return expired
+        if self._should_use_js():
+            r = self._js("isGrantExpired", from_sig, to_sig, pid)
+            if r.ok:
+                expired = _parse_bool(r.stdout) is True
+                self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
+                self.emit_event(
+                    component="blockchain",
+                    stage="expiry_check",
+                    status="ok",
+                    message="Grant expiry evaluated",
+                    policy_id=pid,
+                    from_signature=from_sig,
+                    to_signature=to_sig,
+                    duration_ms=(time.monotonic() - start) * 1000,
+                    details={"expired": expired},
+                )
+                return expired
+        else:
+            try:
+                expired = bool(self._w3_call(self._contract.functions.isGrantExpired(from_sig, to_sig, int(pid))))
+                self.record_operation_latency("expiryCheck", elapsed=time.monotonic() - start)
+                self.emit_event(
+                    component="blockchain",
+                    stage="expiry_check",
+                    status="ok",
+                    message="Grant expiry evaluated",
+                    policy_id=pid,
+                    from_signature=from_sig,
+                    to_signature=to_sig,
+                    duration_ms=(time.monotonic() - start) * 1000,
+                    details={"expired": expired},
+                )
+                return expired
+            except Exception:
+                pass
         # Fallback via getGrantEx
         g = self.get_grant_ex(from_sig, to_sig, pid)
         now = int(time.time())
@@ -1260,14 +1918,23 @@ class Orchestrator:
             to_signature=to_sig,
             details={"ops": op_csv},
         )
-        if os.getenv("REAL_INTERACT"):
-            r = self._js("checkGrant", from_sig, to_sig, policy_id, op_csv)
+        if self._should_use_js():
+            if os.getenv("REAL_INTERACT"):
+                r = self._js("checkGrant", from_sig, to_sig, policy_id, op_csv)
+            else:
+                r = self._js("checkGrant", from_sig, to_sig, op_csv)
+            if not r.ok:
+                raise RuntimeError(r.stderr or r.stdout)
+            self.record_operation_latency("checkGrant", elapsed=time.monotonic() - start)
+            granted = _parse_bool(r.stdout) is True
         else:
-            r = self._js("checkGrant", from_sig, to_sig, op_csv)
-        if not r.ok:
-            raise RuntimeError(r.stderr or r.stdout)
-        self.record_operation_latency("checkGrant", elapsed=time.monotonic() - start)
-        granted = _parse_bool(r.stdout) is True
+            try:
+                granted = bool(self._w3_call(
+                    self._contract.functions.checkGrant(from_sig, to_sig, int(policy_id), _ops_mask(op_csv))
+                ))
+                self.record_operation_latency("checkGrant", elapsed=time.monotonic() - start)
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
         self.emit_event(
             component="blockchain",
             stage="grant_check",
@@ -1292,14 +1959,27 @@ class Orchestrator:
             to_signature=to_sig,
             details={"ops": op_csv},
         )
-        r = self._js("checkGrantAndLog", from_sig, to_sig, policy_id, op_csv)
-        if not r.ok:
-            raise RuntimeError(r.stderr or r.stdout)
-        try:
-            payload = json.loads(r.stdout)
-            granted = bool(payload.get("granted"))
-        except Exception:
-            granted = "true" in (r.stdout or "").lower()
+        if self._should_use_js():
+            r = self._js("checkGrantAndLog", from_sig, to_sig, policy_id, op_csv)
+            if not r.ok:
+                raise RuntimeError(r.stderr or r.stdout)
+            try:
+                payload = json.loads(r.stdout)
+                granted = bool(payload.get("granted"))
+            except Exception:
+                granted = "true" in (r.stdout or "").lower()
+        else:
+            try:
+                receipt = self._w3_send(
+                    self._contract.functions.checkGrantAndLog(from_sig, to_sig, int(policy_id), _ops_mask(op_csv)),
+                    gas_label="checkGrantAndLog",
+                )
+                # Return value not available from receipt; fall back to checkGrant read
+                granted = bool(self._w3_call(
+                    self._contract.functions.checkGrant(from_sig, to_sig, int(policy_id), _ops_mask(op_csv))
+                ))
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
         self.emit_event(
             component="blockchain",
             stage="grant_audit",
@@ -1353,9 +2033,51 @@ class Orchestrator:
         with self._policy_lock:
             _json_save(POLICY_INDEX_FILE, self.policy_index)
 
+    def _policy_matches(self, pid_int: int, from_role: str, to_role: str, ops_mask: int, ctx_hash: str) -> bool:
+        try:
+            gp = self.get_policy(int(pid_int))
+            return bool(
+                gp
+                and int(gp.get("version", 0)) > 0
+                and self._role_name(gp["fromRole"]) == from_role
+                and self._role_name(gp["toRole"]) == to_role
+                and str(gp.get("ctxSchema", "")).lower() == ctx_hash.lower()
+                and int(gp.get("opsAllowed", 0)) == ops_mask
+            )
+        except Exception:
+            return False
+
+    def _parse_policy_resolution_output(self, stdout: str) -> Dict[str, Any]:
+        text = (stdout or "").strip()
+        if not text:
+            return {}
+        if text.startswith("{"):
+            try:
+                return json.loads(text)
+            except Exception:
+                return {}
+        if text.startswith("exists:"):
+            try:
+                return {"status": "exists", "policyId": int(text.split(":", 1)[1]), "note": "legacy_exists"}
+            except Exception:
+                return {}
+        if text.startswith("created:"):
+            return {"status": "created", "policyId": None, "txHash": text.split(":", 1)[1], "note": "legacy_created"}
+        return {}
+
     #@track_performance
     def ensure_policy(self, from_role: str, to_role: str, ops_csv: str, ctx_schema_str: str, create_if_missing: bool=True) -> Dict[str,Any]:
         self._load_policy_index()
+        invalid_roles = _invalid_policy_roles(from_role, to_role)
+        if invalid_roles:
+            allowed = ", ".join(sorted(VALID_POLICY_ROLES))
+            result = {
+                "status": "error",
+                "policyId": None,
+                "note": f"invalid_policy_roles:{', '.join(invalid_roles)} (allowed: {allowed})",
+            }
+            self.record_operation_latency("ensurePolicy")
+            return result
         # 0) local cache?
         key = f"{from_role}|{to_role}|{_ops_mask(ops_csv)}|{ctx_schema_str}"
 
@@ -1377,6 +2099,31 @@ class Orchestrator:
             message="Policy not found in the local cache",
             details={"cache_key": key},
         )
+
+        if self._should_use_js() and not os.getenv("REAL_INTERACT") and create_if_missing:
+            try:
+                msig = self.msig_info()
+            except Exception:
+                msig = {"msigRequired": False}
+        else:
+            msig = None
+
+        if self._should_use_js() and not os.getenv("REAL_INTERACT") and create_if_missing and not (msig or {}).get("msigRequired"):
+            bridge = self._js("ensurePolicy", from_role, to_role, ops_csv, ctx_schema_str)
+            if not bridge.ok:
+                result = {"status": "error", "policyId": None, "note": bridge.stderr or bridge.stdout}
+                self.record_operation_latency("ensurePolicy")
+                return result
+            try:
+                payload = json.loads(bridge.stdout or "{}")
+            except Exception:
+                payload = {"status": "error", "policyId": None, "note": bridge.stdout or "ensure_policy_parse_failed"}
+            pid = payload.get("policyId")
+            if pid:
+                self.policy_index[key] = pid
+                self._save_policy_index()
+            self.record_operation_latency("ensurePolicy")
+            return payload
         
         # 1) try on-chain before creating (avoids DuplicatePolicy revert)
         self.emit_event(
@@ -1475,7 +2222,7 @@ class Orchestrator:
         )
         # 2) msig gate
         try:
-            msig = self.msig_info()
+            msig = msig if msig is not None else self.msig_info()
         except Exception:
             msig = {"msigRequired": False}
 
@@ -1494,27 +2241,22 @@ class Orchestrator:
             self.record_operation_latency("ensurePolicy")
             return result
 
-        # 4) resolve id: nextPolicyId-1, verify; else fallback to find
+        # 4) optimistic resolution: current latest id + 1 should be the new id after create.
         pid = None
         try:
-            np = self._js("nextPolicyId")
-            if np.ok:
-                pid = int(np.stdout) - 1
+            if self._should_use_js():
+                np = self._js("nextPolicyId")
+                if np.ok:
+                    pid = int(np.stdout) + 1
+            else:
+                pid = int(self._w3_call(self._contract.functions.nextPolicyId())) + 1
         except Exception:
             pid = None
 
         def _ok(pid_int: int) -> bool:
-            try:
-                gp = self.get_policy(pid_int)
-                return gp and int(gp.get("version", 0)) > 0 and \
-                    self._role_name(gp["fromRole"]) == from_role and \
-                    self._role_name(gp["toRole"])   == to_role and \
-                    str(gp.get("ctxSchema","")).lower() == ctx_hash.lower() and \
-                    int(gp.get("opsAllowed", 0)) == ops_mask
-            except Exception:
-                return False
+            return self._policy_matches(pid_int, from_role, to_role, ops_mask, ctx_hash)
 
-        def _wait_for_policy_resolution(timeout_seconds: float = 20.0, interval_seconds: float = 1.0) -> Optional[int]:
+        def _wait_for_policy_resolution(timeout_seconds: float = 20.0, interval_seconds: float = 0.1) -> Optional[int]:
             deadline = time.monotonic() + timeout_seconds
             while time.monotonic() < deadline:
                 pid_local = self._find_policy_on_chain(from_role, to_role, ops_csv, ctx_schema_str)
@@ -1523,9 +2265,19 @@ class Orchestrator:
                 time.sleep(interval_seconds)
             return None
 
-        # 3) create
-        r = self.create_policy(from_role, to_role, ops_csv, ctx_schema_str)
-        if not r["ok"]:
+        # 3) create — delegate to create_policy which has its own JS/web3 dual path
+        cp = self.create_policy(from_role, to_role, ops_csv, ctx_schema_str)
+        r_ok = cp.get("ok", False)
+        r_stdout = cp.get("stdout", "")
+        r_stderr = cp.get("stderr", "")
+        # Unify interface: construct a compatible result object
+        class _R:
+            def __init__(self, ok, stdout, stderr):
+                self.ok = ok
+                self.stdout = stdout
+                self.stderr = stderr
+        r = _R(r_ok, r_stdout, r_stderr)
+        if not r.ok:
             if pid and pid >= 1:
                 self.policy_index[key] = pid
                 self._save_policy_index()
@@ -1539,7 +2291,7 @@ class Orchestrator:
                 result = {"status":"exists", "policyId": pid, "note":"resolved via optimistic nextPolicyId after create revert"}
                 self.record_operation_latency("ensurePolicy")
                 return result
-            pid = _wait_for_policy_resolution(timeout_seconds=12.0, interval_seconds=1.0)
+            pid = _wait_for_policy_resolution(timeout_seconds=12.0, interval_seconds=0.1)
             if pid and _ok(pid):
                 self.policy_index[key] = pid
                 self._save_policy_index()
@@ -1553,19 +2305,34 @@ class Orchestrator:
                 result = {"status":"exists", "policyId": pid, "note":"resolved on-chain after create race"}
                 self.record_operation_latency("ensurePolicy")
                 return result
-            return {"status":"error", "policyId": None, "note": r["stderr"] or r["stdout"]}
+            return {"status":"error", "policyId": None, "note": r.stderr or r.stdout}
 
-        if pid and pid >= 1:
-            self.policy_index[key] = pid
+        bridge = self._parse_policy_resolution_output(r.stdout)
+        bridge_pid = bridge.get("policyId")
+        bridge_status = str(bridge.get("status") or "created")
+        if bridge_pid is not None:
+            try:
+                bridge_pid = int(bridge_pid)
+            except Exception:
+                bridge_pid = None
+        tx_hash = bridge.get("txHash")
+
+        if bridge_pid and _ok(bridge_pid):
+            self.policy_index[key] = bridge_pid
             self._save_policy_index()
             self.emit_event(
                 component="blockchain",
                 stage="policy_create",
-                status="ok",
-                message="Policy created on chain",
-                policy_id=pid,
+                status="reused" if bridge_status == "exists" else "ok",
+                message="Policy resolved directly from the policy creation bridge",
+                policy_id=bridge_pid,
+                tx_hash=tx_hash,
             )
-            result = {"status":"created", "policyId": pid, "note":"policy created (optimistic nextPolicyId)"}
+            result = {
+                "status": "exists" if bridge_status == "exists" else "created",
+                "policyId": bridge_pid,
+                "note": bridge.get("note", "resolved via ensurePolicy bridge"),
+            }
             self.record_operation_latency("ensurePolicy")
             return result
 
@@ -1578,10 +2345,12 @@ class Orchestrator:
                 status="ok",
                 message="Policy created on chain",
                 policy_id=pid,
+                tx_hash=tx_hash,
             )
-            result = {"status":"created", "policyId": pid, "note":"policy created"}
+            result = {"status":"created", "policyId": pid, "note":"policy created (optimistic nextPolicyId)"}
             self.record_operation_latency("ensurePolicy")
             return result
+
         if pid and pid >= 1 and not os.getenv("REAL_INTERACT"):
             self.policy_index[key] = pid
             self._save_policy_index()
@@ -1591,12 +2360,13 @@ class Orchestrator:
                 status="ok",
                 message="Policy created through the mock interact path",
                 policy_id=pid,
+                tx_hash=tx_hash,
             )
             result = {"status":"created", "policyId": pid, "note":"policy created (mock fallback)"}
             self.record_operation_latency("ensurePolicy")
             return result
 
-        pid = _wait_for_policy_resolution(timeout_seconds=20.0, interval_seconds=1.0)
+        pid = _wait_for_policy_resolution(timeout_seconds=20.0, interval_seconds=0.1)
         if pid and _ok(pid):
             self.policy_index[key] = pid
             self._save_policy_index()
@@ -1606,6 +2376,7 @@ class Orchestrator:
                 status="ok",
                 message="Policy created after propagation delay",
                 policy_id=pid,
+                tx_hash=tx_hash,
             )
             result = {"status":"created", "policyId": pid, "note":"policy created (resolved after propagation)"}
             self.record_operation_latency("ensurePolicy")
@@ -1624,13 +2395,32 @@ class Orchestrator:
                         status="ok",
                         message="Policy created and confirmed through indexed search",
                         policy_id=pid,
+                        tx_hash=tx_hash,
                     )
                     result = {"status":"created", "policyId": pid, "note":"policy created (found via search)"}
                     self.record_operation_latency("ensurePolicy")
                     return result
         except Exception:
             pass
-        result = {"status":"created", "policyId": None, "note":"policy_id_unknown"}
+
+        pid = _wait_for_policy_resolution(timeout_seconds=45.0, interval_seconds=0.1)
+        if pid and _ok(pid):
+            self.policy_index[key] = pid
+            self._save_policy_index()
+            self.emit_event(
+                component="blockchain",
+                stage="policy_create",
+                status="ok",
+                message="Policy created and resolved after extended reconciliation",
+                policy_id=pid,
+                tx_hash=tx_hash,
+            )
+            result = {"status":"created", "policyId": pid, "note":"policy created (resolved after extended reconciliation)"}
+            self.record_operation_latency("ensurePolicy")
+            return result
+
+        unresolved_note = bridge.get("note") or "policy_resolution_failed_after_create"
+        result = {"status":"error", "policyId": None, "note": unresolved_note}
         self.record_operation_latency("ensurePolicy")
         return result
 
@@ -1642,15 +2432,36 @@ class Orchestrator:
         """
         
         pattern = re.compile(r'0x[a-fA-F0-9]{40}')
+        last_block: int = 0
+        poll_delay = 10.0
+        max_poll_delay = 60.0
+        idle_since = time.monotonic()
+        next_idle_log = idle_since
         while True:
-            print("[listener] checking for new validator proposals...")
             try:
-                r = self._js("listenForValidatorProposals")
-                print(f"[listener] listenForValidatorProposals: ok={r.ok}, stdout={r.stdout!r}, stderr={r.stderr!r}, code={r.code}")
-                if r.ok:
-                    addrs = [m.group(0).lower() for m in pattern.finditer(r.stdout or "")]
-                    print(f"[listener] found proposed addresses: {addrs}")
-                    if addrs:
+                addrs: list = []
+                if self._should_use_js():
+                    r = self._js("listenForValidatorProposals")
+                    if r.ok:
+                        addrs = [m.group(0).lower() for m in pattern.finditer(r.stdout or "")]
+                    elif r.stderr:
+                        print(f"[listener] JS validator proposal poll failed: {r.stderr}")
+                else:
+                    try:
+                        latest = int(self._w3.eth.block_number)
+                        from_block = max(0, last_block) if last_block else max(0, latest - 100)
+                        logs = self._contract.events.ValidatorProposed.get_logs(
+                            from_block=from_block, to_block=latest
+                        )
+                        addrs = [str(e["args"].get("validator", "")).lower() for e in logs if e["args"].get("validator")]
+                        last_block = latest + 1
+                    except Exception as exc:
+                        print(f"[listener] web3 event fetch error: {exc}")
+                if addrs:
+                        poll_delay = 10.0
+                        idle_since = time.monotonic()
+                        next_idle_log = idle_since + 300.0
+                        print(f"[listener] found proposed validator addresses: {addrs}")
                         flow_id = self._new_flow_id("validator")
                         self.emit_event(
                             component="validator_listener",
@@ -1665,9 +2476,34 @@ class Orchestrator:
                         for a in addrs:
                             if a not in cur:
                                 self._propose_and_vote(a)
+                else:
+                    now = time.monotonic()
+                    if now >= next_idle_log:
+                        idle_for = int(now - idle_since)
+                        print(f"[listener] idle; no validator proposals observed for {idle_for}s (poll interval {int(poll_delay)}s)")
+                        next_idle_log = now + 300.0
+                    poll_delay = min(max_poll_delay, poll_delay * 1.5)
             except Exception as e:
                 print(f"[listener] error: {e}")
-            time.sleep(10)
+                poll_delay = min(max_poll_delay, max(10.0, poll_delay))
+            time.sleep(poll_delay)
+
+    def _acquire_validator_listener_lead(self) -> bool:
+        if fcntl is None:
+            return True
+        try:
+            self._vlisten_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_fd = os.open(self._vlisten_lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(lock_fd, 0)
+            os.write(lock_fd, str(os.getpid()).encode("ascii", errors="ignore"))
+            self._vlisten_lock_fd = lock_fd
+            return True
+        except BlockingIOError:
+            return False
+        except Exception as exc:
+            print(f"[listener] lead-lock unavailable: {exc}")
+            return True
 
     def start_validator_listener(self):
         """Start the background listener once."""
@@ -1675,6 +2511,8 @@ class Orchestrator:
             return
         with self._vlisten_lock:
             if self._vlisten_started:
+                return
+            if not self._acquire_validator_listener_lead():
                 return
             self._vlisten_started = True
         print("[listener] starting validator listener thread")
@@ -1710,7 +2548,6 @@ class Orchestrator:
         if not self.check_if_deployed():
             return {"ok": False, "why": "contract_not_deployed"}
 
-        # print(f"registration_flow: payload={payload}")
         self.emit_event(
             component="orchestrator",
             stage="signature_verification",
@@ -1765,11 +2602,12 @@ class Orchestrator:
         # === EARLY EXIT IF ALREADY REGISTERED ===
         if already:
             # Do NOT send ACK or touch validator flow; just report status.
-            return {"ok": True, "status": "already_registered", "ack_sent": False, "tx": None}
+            return {"ok": True, "status": "already_registered", "ack_sent": False, "ack_status": "skipped", "ack_required": False, "tx": None}
         # ========================================
         tx_out = None
         node_id, node_name = payload["node_id"], payload["node_name"]
         registered_by_addr = self.registrar_addr or payload.get("registrar_addr")
+        payload["address"] = self._clean_address(payload.get("address") or "")
 
         rpcURL = payload.get("rpcURL","")
         registered_by_type = self.registrar_role
@@ -1780,129 +2618,32 @@ class Orchestrator:
         )
 
         ack_sent = False
+        ack_status = "not_needed"
+        ack_required = False
         try:
-            role = (payload.get("node_type") or "").strip()
-            # Only Fog/Edge get ACK (Cloud/Sensor/Actuator are excluded)
-            if (not already) and tx_out and role in ALLOWED_ACK_ROLES:
-                ack_url   = (payload.get("ack_url") or payload.get("node_url") or "").rstrip("/")
-                ack_token = (payload.get("ack_token") or "").strip()  # client-generated one-time token
-                print(f"*****[ack] ack_url={ack_url!r}, ack_token={ack_token!r}, role={role}")
-                if ack_url and ack_url.startswith(("https://", "http://")):
-                    self.emit_event(
-                        component="orchestrator",
-                        stage="acknowledgement_send",
-                        status="started",
-                        message="Sending bootstrap acknowledgement to the new node",
-                        details={"ack_url": ack_url},
-                        from_signature=sig,
-                    )
-                    ack = AcknowledgementSender(
-                        registering_node_url=ack_url,
-                        genesis_file=self.genesis_file_path,
-                        node_registry_file=self.node_registry_json,
-                        besu_rpc_url=self.besu_rpc_url,
-                        prefunded_keys_file=self.prefunded_keys_json
-                    )
-                    # NOTE: AcknowledgementSender must accept auth_token and node_type
-                    ack_sent = ack.send_acknowledgment(
-                        payload["node_id"],
-                        node_type=role
-                        # auth_token=ack_token
-                    )
-                    self.emit_event(
-                        component="orchestrator",
-                        stage="acknowledgement_send",
-                        status="ok" if ack_sent else "error",
-                        message="Bootstrap acknowledgement completed" if ack_sent else "Bootstrap acknowledgement failed",
-                        details={"ack_url": ack_url},
-                        from_signature=sig,
-                    )
-                elif not os.getenv("REAL_INTERACT"):
-                    ack_sent = True
+            ack_meta = self._dispatch_acknowledgement(payload, tx_out=tx_out)
+            ack_sent = bool(ack_meta.get("ack_sent", False))
+            ack_status = str(ack_meta.get("ack_status") or "not_needed")
+            ack_required = bool(ack_meta.get("ack_required", False))
         except Exception as e:
             print(f"Acknowledgement error: {e}")
             ack_sent = False
+            ack_status = "skipped"
+            ack_required = (payload.get("node_type") or "").strip() in ALLOWED_ACK_ROLES
         # --- /SECURE ACK ---
 
         # Validator promotion must follow the explicit request flag for non-root nodes.
         wants_validator = bool(payload.get("wants_validator", False)) or (node_type_str == "Cloud")
-        proposed = False
-        included = False
         if wants_validator:
-            # >>> EARLY CHECK: already in validator set? Skip waits/proposals.
             cur = self._normalize_validators(self.qbft_get_validators())
             new_addr_lc = (payload.get("address") or "").lower()
             if new_addr_lc and new_addr_lc in cur:
-                included = True
-                return {"ok": True, "status": "validator_already_included", "ack_sent": ack_sent, "tx": tx_out}
-            else:
-                # 1) brief, bounded wait for the node to actually join peers after ACK
-                self.emit_event(
-                    component="validator_listener",
-                    stage="peer_wait",
-                    status="waiting",
-                    message="Waiting for the candidate validator node to join peers",
-                    details={"address": payload.get("address")},
-                    from_signature=sig,
-                )
-                self._wait_for_peer_bump(max_wait_sec=90, step=5)
+                return {"ok": True, "status": "validator_already_included", "ack_sent": ack_sent, "ack_status": ack_status, "ack_required": ack_required, "tx": tx_out}
+            self._promote_validator_async(payload, from_signature=sig)
+            return {"ok": True, "status": "validator_proposed", "ack_sent": ack_sent, "ack_status": ack_status, "ack_required": ack_required, "tx": tx_out}
 
-                # 2) if still not a validator, propose + vote (quorum attempt)
-                cur = self._normalize_validators(self.qbft_get_validators())
-                if new_addr_lc and new_addr_lc not in cur:
-                    self.start_validator_listener()
-                    self.emit_event(
-                        component="validator_listener",
-                        stage="validator_proposal",
-                        status="started",
-                        message="Proposing the node as a validator",
-                        details={"address": payload.get("address")},
-                        from_signature=sig,
-                    )
-                    proposed = self.propose_validator(payload["address"]) is not None
-                    # auto-vote yes (idempotent, guarded)
-                    self.emit_event(
-                        component="validator_listener",
-                        stage="validator_vote",
-                        status="started",
-                        message="Submitting validator vote",
-                        details={"address": payload.get("address")},
-                        from_signature=sig,
-                    )
-                    voted = self._propose_and_vote(payload["address"]) or proposed
-                    self.emit_event(
-                        component="validator_listener",
-                        stage="validator_vote",
-                        status="ok" if voted else "error",
-                        message="Validator vote completed" if voted else "Validator vote failed",
-                        details={"address": payload.get("address")},
-                        from_signature=sig,
-                    )
-
-                    # 3) exponential backoff poll for inclusion (bounded, fast exit if included)
-                    backoff = [3, 5, 8, 13]  # ~71s total; tweak as needed
-                    for sec in backoff:
-                        time.sleep(sec)
-                        cur = self._normalize_validators(self.qbft_get_validators())
-                        if new_addr_lc in cur:
-                            included = True
-                            break        
-            self.emit_event(
-                component="validator_listener",
-                stage="validator_inclusion_result",
-                status="ok" if included else ("waiting" if proposed else "skipped"),
-                message="Validator inclusion observed" if included else ("Validator proposal submitted and inclusion is pending" if proposed else "Validator flow skipped"),
-                details={"address": payload.get("address")},
-                from_signature=sig,
-            )
-        # --- Final status synthesis ---
-        status = (
-            "validator_included" if included else
-            ("validator_proposed" if proposed else
-             ("endpoint_registered" if is_endpoint else "registered"))
-        )
-
-        return {"ok": True, "status": status, "ack_sent": ack_sent, "tx": tx_out}
+        status = "endpoint_registered" if is_endpoint else "registered"
+        return {"ok": True, "status": status, "ack_sent": ack_sent, "ack_status": ack_status, "ack_required": ack_required, "tx": tx_out}
                 
 
     # ---------- Algorithm B: Access Control + Delegation ----------
@@ -1928,6 +2669,15 @@ class Orchestrator:
             )
         if not self.check_if_deployed():
             return {"ok": False, "why": "contract_not_deployed"}
+
+        # Grant cache fast-path
+        _cache_key = (from_sig, to_sig, (http_method or "").upper(), resource_path)
+        with self._grant_cache_lock:
+            _cached = self._grant_cache.get(_cache_key)
+        if _cached:
+            _cached_result, _cached_expiry = _cached
+            if time.time() < _cached_expiry:
+                return _cached_result
 
         # Check registration first
         self.emit_event(
@@ -2071,8 +2821,22 @@ class Orchestrator:
         # Final decision
         granted = self.check_grant(from_sig, to_sig, policy_id, op)
         if granted and audit and os.getenv("REAL_INTERACT"):
-            granted = self.check_grant_and_log(from_sig, to_sig, policy_id, op)
-        return {"ok": True, "granted": granted, "op": op, "policyId": policy_id, "ctx": ctx}
+            # Fire-and-forget: submit audit tx in background so HTTP response is not blocked
+            _f, _t, _p, _o = from_sig, to_sig, policy_id, op
+            def _audit_bg(_f=_f, _t=_t, _p=_p, _o=_o):
+                try:
+                    self.check_grant_and_log(_f, _t, _p, _o)
+                except Exception:
+                    pass
+            threading.Thread(target=_audit_bg, daemon=True).start()
+        _result = {"ok": True, "granted": granted, "op": op, "policyId": policy_id, "ctx": ctx}
+        if granted:
+            # Cache positive decisions until the grant expires
+            _grant_expiry = float(gx.get("expiresAt", 0)) if gx else 0.0
+            _cache_until = _grant_expiry if _grant_expiry > time.time() else time.time() + float(expiry_secs)
+            with self._grant_cache_lock:
+                self._grant_cache[_cache_key] = (_result, _cache_until)
+        return _result
 
     #@track_performance
     def delegate_flow(self, parent_from_sig: str, to_sig: str, child_from_sig: str,
@@ -2144,7 +2908,8 @@ class Orchestrator:
 
         # Attempt delegation
         try:
-            out = self.delegate_grant(parent_from_sig, to_sig, child_from_sig, _ops_csv(ops_csv), child_exp_at)
+            parent_pid = int(parent.get("policyId", 0) or 0) or None
+            out = self.delegate_grant(parent_from_sig, to_sig, child_from_sig, _ops_csv(ops_csv), child_exp_at, policy_id=parent_pid)
             ok = True
         except Exception as e:
             return {"ok": False, "why": f"delegate_reverted:{e}"}

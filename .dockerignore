@@ -1,0 +1,11 @@
+.git
+.venv
+node_modules
+runtime/generated
+results
+Node_root/data/database
+Node_root/data/caches
+Node_root/prometheus_data
+Node_root/__pycache__
+scripts/__pycache__
+Node_root/scripts/__pycache__

@@ -14,7 +14,7 @@ contract NodeRegistry {
     error InvalidRoles();
     error EmptyOpsAllowed();
     error PolicyNotFound();
-    error PolicyDeprecated();
+    error PolicyIsDeprecated();
     error PolicyRoleMismatch();
     error EmptyOpsSubset();
     error InvalidExpiry();
@@ -28,6 +28,7 @@ contract NodeRegistry {
     error OpsSubsetExceedsAllowed();
     error NotGrantHolder();
     error AlreadyRevoked();
+    error InvalidDelegationDepth();
 
     // -------- Types --------
     enum NodeType { Unknown, Cloud, Fog, Edge, Sensor, Actuator }
@@ -62,6 +63,8 @@ contract NodeRegistry {
         bool   delegationAllowed;
         uint8  delegationDepth;
         bytes32 parentGrantId; // NEW: linkage for delegated grants
+        uint8  depthDel;
+        bytes32 parentTokenId;
     }
 
     // -------- Storage --------
@@ -76,6 +79,7 @@ contract NodeRegistry {
 
     // Keyed by keccak256(abi.encode(fromSig, toSig, policyId))
     mapping(bytes32 => CapabilityGrant) public grants;
+    mapping(bytes32 => CapabilityGrant) private grantsByTokenId;
 
     // policyHash -> policyId (for duplicate detection)
     mapping(bytes32 => uint256) public policyIdByHash;
@@ -112,6 +116,7 @@ contract NodeRegistry {
         bytes32 ctxSchema,
         bytes32 policyHash
     );
+    event PolicyDeprecated(uint256 indexed policyId);
     event PolicyDeprecatedEvent(uint256 indexed policyId);
     event PolicyChanged(uint256 indexed policyId, uint32 version);
 
@@ -119,6 +124,8 @@ contract NodeRegistry {
     event GrantExtended(bytes32 indexed grantId, uint64 newExpiresAt, uint8 newOpsSubset);
     event GrantRevoked(bytes32 indexed grantId);
     event GrantDelegated(bytes32 indexed parentGrantId, bytes32 indexed grantId, uint8 depthRemaining);
+    event AccessDenied(address indexed from, address indexed to, bytes32 indexed policyId, uint8 op, string reason, uint256 timestamp);
+    event AccessGranted(address indexed from, address indexed to, bytes32 indexed policyId, uint8 op, uint256 timestamp);
 
     // ============== MULTISIG CONFIG (STATE + EVENTS) ==============
     bool public msigRequired;                     // on/off switch
@@ -384,7 +391,7 @@ contract NodeRegistry {
         );
     }
 
-    function approveCreatePolicy(uint8 fromRole, uint8 toRole, uint8 ops, bytes32 schema) external {
+    function approveCreatePolicy(uint8 fromRole, uint8 toRole, uint8 ops, bytes32 schema) public {
         if (!msigApprover[msg.sender]) revert NotPolicyAdmin();
         bytes32 k = _keyCreatePolicy(fromRole, toRole, ops, schema);
         if (msigApprovedBy[k][msg.sender]) revert GrantAlreadyActive(); // already approved by this approver
@@ -392,6 +399,10 @@ contract NodeRegistry {
         uint256 c = msigApprovalsCount[k] + 1;
         msigApprovalsCount[k] = c;
         emit MsigApproved(k, msg.sender, c);
+    }
+
+    function approvePolicy(uint8 fromRole, uint8 toRole, uint8 ops, bytes32 schema) external {
+        approveCreatePolicy(fromRole, toRole, ops, schema);
     }
 
     function _requireAndClearApprovals(bytes32 k) internal {
@@ -449,7 +460,7 @@ contract NodeRegistry {
 
     function updatePolicy(uint256 policyId, uint8 opsAllowed, bytes32 ctxSchema) external onlyPolicyAdmin {
         if (policies[policyId].version == 0) revert PolicyNotFound();
-        if (policies[policyId].isDeprecated) revert PolicyDeprecated();
+        if (policies[policyId].isDeprecated) revert PolicyIsDeprecated();
         if (opsAllowed == 0) revert EmptyOpsAllowed();
 
         // compute new hash and check it doesn't collide with another live policy
@@ -473,12 +484,13 @@ contract NodeRegistry {
 
     function deprecatePolicy(uint256 policyId) external onlyPolicyAdmin {
         if (policies[policyId].version == 0) revert PolicyNotFound();
-        if (policies[policyId].isDeprecated) revert PolicyDeprecated();
+        if (policies[policyId].isDeprecated) revert PolicyIsDeprecated();
         policies[policyId].isDeprecated = true;
 
         // free the hash so an identical policy can be recreated later if needed
         policyIdByHash[policies[policyId].policyHash] = 0;
 
+        emit PolicyDeprecated(policyId);
         emit PolicyDeprecatedEvent(policyId);
         emit PolicyChanged(policyId, policies[policyId].version);
     }
@@ -499,6 +511,22 @@ contract NodeRegistry {
         return keccak256(abi.encode(fromNodeSignature, toNodeSignature, policyId));
     }
 
+    function _syncGrantIndex(bytes32 grantId) internal {
+        CapabilityGrant storage src = grants[grantId];
+        CapabilityGrant storage dst = grantsByTokenId[grantId];
+        dst.issuedAt = src.issuedAt;
+        dst.expiresAt = src.expiresAt;
+        dst.policyId = src.policyId;
+        dst.opsSubset = src.opsSubset;
+        dst.isIssued = src.isIssued;
+        dst.isRevoked = src.isRevoked;
+        dst.delegationAllowed = src.delegationAllowed;
+        dst.delegationDepth = src.delegationDepth;
+        dst.parentGrantId = src.parentGrantId;
+        dst.depthDel = src.depthDel;
+        dst.parentTokenId = src.parentTokenId;
+    }
+
     function issueGrant(
         string calldata fromNodeSignature,
         string calldata toNodeSignature,
@@ -507,6 +535,25 @@ contract NodeRegistry {
         uint64 expiresAt
     ) external {
         _issueGrantCore(fromNodeSignature, toNodeSignature, policyId, opsSubset, expiresAt, false, 0);
+    }
+
+    function issueGrant(
+        string calldata fromNodeSignature,
+        string calldata toNodeSignature,
+        uint256 policyId,
+        uint8 opsSubset,
+        uint64 expiresAt,
+        uint8 maxDelegationDepth
+    ) external {
+        _issueGrantCore(
+            fromNodeSignature,
+            toNodeSignature,
+            policyId,
+            opsSubset,
+            expiresAt,
+            maxDelegationDepth > 0,
+            maxDelegationDepth
+        );
     }
 
     function issueGrantDelegable(
@@ -519,6 +566,25 @@ contract NodeRegistry {
         uint8 delegationDepth
     ) external {
         _issueGrantCore(fromNodeSignature, toNodeSignature, policyId, opsSubset, expiresAt, delegationAllowed, delegationDepth);
+    }
+
+    function issueToken(
+        string calldata fromNodeSignature,
+        string calldata toNodeSignature,
+        uint256 policyId,
+        uint8 opsSubset,
+        uint64 expiresAt,
+        uint8 maxDelegationDepth
+    ) external {
+        _issueGrantCore(
+            fromNodeSignature,
+            toNodeSignature,
+            policyId,
+            opsSubset,
+            expiresAt,
+            maxDelegationDepth > 0,
+            maxDelegationDepth
+        );
     }
 
     function _issueGrantCore(
@@ -538,7 +604,7 @@ contract NodeRegistry {
 
         Policy storage p = policies[policyId];
         if (p.version == 0) revert PolicyNotFound();
-        if (p.isDeprecated) revert PolicyDeprecated();
+        if (p.isDeprecated) revert PolicyIsDeprecated();
         if (p.fromRole != iotNodes[fromNodeId].nodeType || p.toRole != iotNodes[toNodeId].nodeType) revert PolicyRoleMismatch();
 
         if (opsSubset == 0) revert EmptyOpsSubset();
@@ -557,7 +623,12 @@ contract NodeRegistry {
             if (expiresAt > g.expiresAt) {
                 g.expiresAt = expiresAt;
             }
-            // keep existing delegation flags as is
+            g.delegationAllowed = delegationAllowed;
+            g.delegationDepth = delegationDepth;
+            g.depthDel = delegationDepth;
+            g.parentGrantId = bytes32(0);
+            g.parentTokenId = bytes32(0);
+            _syncGrantIndex(grantId);
             emit GrantExtended(grantId, g.expiresAt, g.opsSubset);
             return;
         }
@@ -572,6 +643,9 @@ contract NodeRegistry {
         g.delegationAllowed = delegationAllowed;
         g.delegationDepth   = delegationDepth;
         g.parentGrantId     = bytes32(0);
+        g.depthDel          = delegationDepth;
+        g.parentTokenId     = bytes32(0);
+        _syncGrantIndex(grantId);
 
         emit GrantIssued(grantId);
     }
@@ -584,12 +658,51 @@ contract NodeRegistry {
         uint8 opsSubset,
         uint64 expiresAt
     ) external {
-        // Load parent grant by canonical key (currentFrom -> to, policyId)
+        uint8 parentDepth = grants[_grantKey(currentFromNodeSignature, toNodeSignature, policyId)].depthDel;
+        _delegateGrantCore(
+            currentFromNodeSignature,
+            toNodeSignature,
+            newFromNodeSignature,
+            policyId,
+            opsSubset,
+            expiresAt,
+            parentDepth > 0 ? parentDepth - 1 : 0
+        );
+    }
+
+    function issueTokenDelegable(
+        string calldata currentFromNodeSignature,
+        string calldata toNodeSignature,
+        string calldata newFromNodeSignature,
+        uint256 policyId,
+        uint8 opsSubset,
+        uint64 expiresAt,
+        uint8 requestedDepth
+    ) external {
+        _delegateGrantCore(
+            currentFromNodeSignature,
+            toNodeSignature,
+            newFromNodeSignature,
+            policyId,
+            opsSubset,
+            expiresAt,
+            requestedDepth
+        );
+    }
+
+    function _delegateGrantCore(
+        string calldata currentFromNodeSignature,
+        string calldata toNodeSignature,
+        string calldata newFromNodeSignature,
+        uint256 policyId,
+        uint8 opsSubset,
+        uint64 expiresAt,
+        uint8 requestedDepth
+    ) internal {
         bytes32 parentId = _grantKey(currentFromNodeSignature, toNodeSignature, policyId);
         CapabilityGrant storage parent = grants[parentId];
-        if (!parent.isIssued || parent.isRevoked) revert NotGrantHolder();
-        if (uint64(block.timestamp) > parent.expiresAt) revert InvalidExpiry();
-        if (!parent.delegationAllowed || parent.delegationDepth == 0) revert NotGrantHolder();
+        if (!parent.isIssued || parent.isRevoked || uint64(block.timestamp) > parent.expiresAt) revert NotGrantHolder();
+        if (!parent.delegationAllowed || parent.depthDel == 0) revert InvalidDelegationDepth();
 
         // Holder-ownership check: caller must control the currentFrom node
         // string memory holderNodeId = nodeSignatureToNodeId[currentFromNodeSignature];
@@ -598,11 +711,12 @@ contract NodeRegistry {
         // Policy must be live, and the child must not exceed policy or parent
         Policy storage p = policies[parent.policyId];
         if (p.version == 0) revert PolicyNotFound();
-        if (p.isDeprecated) revert PolicyDeprecated();
+        if (p.isDeprecated) revert PolicyIsDeprecated();
         if (opsSubset == 0) revert EmptyOpsSubset();
         if ((opsSubset & ~p.opsAllowed) != 0) revert OpsSubsetExceedsAllowed();
         if ((opsSubset & ~parent.opsSubset) != 0) revert OpsSubsetExceedsAllowed();
         if (expiresAt <= uint64(block.timestamp) || expiresAt > parent.expiresAt) revert InvalidExpiry();
+        if (requestedDepth >= parent.depthDel || parent.depthDel == 0) revert InvalidDelegationDepth();
 
         // Create/extend child grant (newFrom -> to, same policyId)
         bytes32 childId = _grantKey(newFromNodeSignature, toNodeSignature, policyId);
@@ -614,21 +728,30 @@ contract NodeRegistry {
             if (expiresAt > c.expiresAt) {
                 c.expiresAt = expiresAt;
             }
+            c.delegationAllowed = requestedDepth > 0;
+            c.delegationDepth = requestedDepth;
+            c.depthDel = requestedDepth;
+            c.parentGrantId = parentId;
+            c.parentTokenId = parentId;
+            _syncGrantIndex(childId);
             // keep link/flags if already set
             emit GrantExtended(childId, c.expiresAt, c.opsSubset);
             return;
         }
 
-        // Fresh child grant; propagate delegation flags and depth (minus one)
+        // Fresh child grant; propagate delegation flags and depth
         c.policyId          = uint32(parent.policyId);
         c.opsSubset         = opsSubset;
         c.issuedAt          = uint64(block.timestamp);
         c.expiresAt         = expiresAt;
         c.isIssued          = true;
         c.isRevoked         = false;
-        c.delegationAllowed = parent.delegationAllowed;
-        unchecked { c.delegationDepth = parent.delegationDepth - 1; }
+        c.delegationAllowed = requestedDepth > 0;
+        c.delegationDepth   = requestedDepth;
+        c.depthDel          = requestedDepth;
         c.parentGrantId     = parentId;
+        c.parentTokenId     = parentId;
+        _syncGrantIndex(childId);
 
         emit GrantDelegated(parentId, childId, c.delegationDepth);
     }
@@ -640,6 +763,17 @@ contract NodeRegistry {
         if (grants[grantId].isRevoked) revert AlreadyRevoked();
 
         grants[grantId].isRevoked = true;
+        grantsByTokenId[grantId].isRevoked = true;
+        emit GrantRevoked(grantId);
+    }
+
+    function revokeToken(string calldata fromNodeSignature, string calldata toNodeSignature, uint256 policyId) external {
+        bytes32 grantId = _grantKey(fromNodeSignature, toNodeSignature, policyId);
+        if (!grants[grantId].isIssued) revert PolicyNotFound();
+        if (grants[grantId].isRevoked) revert AlreadyRevoked();
+
+        grants[grantId].isRevoked = true;
+        grantsByTokenId[grantId].isRevoked = true;
         emit GrantRevoked(grantId);
     }
 
@@ -680,31 +814,77 @@ contract NodeRegistry {
         return (g.policyId, g.opsSubset, g.issuedAt, g.expiresAt, g.isIssued, g.isRevoked, g.delegationAllowed, g.delegationDepth);
     }
 
+    function getGrantLineage(
+        string calldata fromNodeSignature,
+        string calldata toNodeSignature,
+        uint256 policyId
+    ) external view returns (uint8 depthDelOut, bytes32 parentTokenIdOut) {
+        bytes32 id = _grantKey(fromNodeSignature, toNodeSignature, policyId);
+        CapabilityGrant storage g = grants[id];
+        return (g.depthDel, g.parentTokenId);
+    }
+
+    function _evaluateGrant(
+        string calldata fromNodeSignature,
+        string calldata toNodeSignature,
+        uint256 policyId,
+        uint8 opBit
+    ) private view returns (bool, string memory) {
+        bytes32 grantId = _grantKey(fromNodeSignature, toNodeSignature, policyId);
+        CapabilityGrant storage g = grants[grantId];
+        if (!g.isIssued) return (false, "not_issued");
+        if (g.isRevoked) return (false, "revoked");
+        if (uint64(block.timestamp) > g.expiresAt) return (false, "expired");
+
+        bytes32 ancestorId = g.parentTokenId;
+        for (uint8 depth = 0; depth < 10 && ancestorId != bytes32(0); depth++) {
+            CapabilityGrant storage parent = grantsByTokenId[ancestorId];
+            if (!parent.isIssued) return (false, "parent_not_issued");
+            if (parent.isRevoked) return (false, "parent_revoked");
+            if (uint64(block.timestamp) > parent.expiresAt) return (false, "parent_expired");
+            ancestorId = parent.parentTokenId;
+        }
+        if (ancestorId != bytes32(0)) return (false, "parent_depth_exceeded");
+
+        Policy storage p = policies[g.policyId];
+        if (p.version == 0) return (false, "policy_not_found");
+        if (p.isDeprecated) return (false, "policy_deprecated");
+
+        if ((g.opsSubset & opBit) == 0) return (false, "grant_op_missing");
+        if ((p.opsAllowed & opBit) == 0) return (false, "policy_op_missing");
+
+        return (true, "granted");
+    }
+
     function checkGrant(
         string calldata fromNodeSignature,
         string calldata toNodeSignature,
         uint256 policyId,
         uint8 opBit
     ) external view returns (bool) {
-        bytes32 grantId = _grantKey(fromNodeSignature, toNodeSignature, policyId);
-        CapabilityGrant storage g = grants[grantId];
-        if (!g.isIssued || g.isRevoked) return false;
-        if (uint64(block.timestamp) > g.expiresAt) return false;
+        (bool ok, ) = _evaluateGrant(fromNodeSignature, toNodeSignature, policyId, opBit);
+        return ok;
+    }
 
-        // parent must be valid if present
-        if (g.parentGrantId != bytes32(0)) {
-            CapabilityGrant storage parent = grants[g.parentGrantId];
-            if (!parent.isIssued || parent.isRevoked) return false;
-            if (uint64(block.timestamp) > parent.expiresAt) return false;
+    function checkGrantAndLog(
+        string calldata fromNodeSignature,
+        string calldata toNodeSignature,
+        uint256 policyId,
+        uint8 opBit
+    ) external returns (bool) {
+        (bool ok, string memory reason) = _evaluateGrant(fromNodeSignature, toNodeSignature, policyId, opBit);
+        string memory fromNodeId = nodeSignatureToNodeId[fromNodeSignature];
+        string memory toNodeId = nodeSignatureToNodeId[toNodeSignature];
+        address fromAddr = iotNodes[fromNodeId].registeredBy;
+        address toAddr = iotNodes[toNodeId].registeredBy;
+        bytes32 policyKey = bytes32(policyId);
+
+        if (ok) {
+            emit AccessGranted(fromAddr, toAddr, policyKey, opBit, block.timestamp);
+        } else {
+            emit AccessDenied(fromAddr, toAddr, policyKey, opBit, reason, block.timestamp);
         }
-
-        Policy storage p = policies[g.policyId];
-        if (p.version == 0 || p.isDeprecated) return false;
-
-        if ((g.opsSubset & opBit) == 0) return false;
-        if ((p.opsAllowed & opBit) == 0) return false;
-
-        return true;
+        return ok;
     }
 
     function isGrantExpired(

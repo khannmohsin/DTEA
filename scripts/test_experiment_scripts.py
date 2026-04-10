@@ -120,3 +120,62 @@ def test_run_all_experiments_main_writes_aggregate(monkeypatch, tmp_path):
     assert payload["gas_summary"]["issueToken"]["count"] == 2
     assert payload["contract_metrics"][0]["contract"] == "TOTALS"
     assert payload["gas_comparison"]["baseline_complete"] is False
+
+
+def test_experimental_setup_uses_live_validator_set_when_manifest_is_pending(monkeypatch, tmp_path):
+    experiments = load_module("run_all_experiments_setup_mod", REPO_ROOT / "scripts" / "run_all_experiments.py")
+
+    root_dir = tmp_path / "root"
+    genesis_dir = root_dir / "genesis"
+    genesis_dir.mkdir(parents=True)
+    (genesis_dir / "genesis.json").write_text(json.dumps({
+        "config": {
+            "chainId": 1337,
+            "qbft": {
+                "blockperiodseconds": 5,
+                "epochlength": 30000,
+                "requesttimeoutseconds": 10,
+            },
+        },
+    }))
+
+    scenario = {
+        "root": {
+            "api_url": "http://cloud:5600",
+            "directory": str(root_dir),
+            "node_details": {
+                "signature": "sig-cloud",
+                "address": "0x1111111111111111111111111111111111111111",
+            },
+        },
+        "nodes": [
+            {
+                "tier": "fog",
+                "wants_validator": True,
+                "registration": {"status": "validator_proposed"},
+                "payload": {
+                    "signature": "sig-fog",
+                    "address": "0x2222222222222222222222222222222222222222",
+                },
+            }
+        ],
+    }
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.ok = True
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    monkeypatch.setattr(
+        experiments.requests,
+        "get",
+        lambda url, timeout=5: FakeResponse({"validators": "['0x1111111111111111111111111111111111111111','0x2222222222222222222222222222222222222222']"}),
+    )
+
+    setup = experiments.experimental_setup(scenario)
+
+    assert setup["validator_set_size"] == 2
+    assert setup["validator_nodes"] == ["sig-cloud", "sig-fog"]

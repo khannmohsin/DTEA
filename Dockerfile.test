@@ -1,0 +1,15 @@
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app:/app/Node_root
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+
+RUN pip install --no-cache-dir -r /app/requirements.txt pytest
+
+COPY . /app
+
+CMD ["sleep", "infinity"]

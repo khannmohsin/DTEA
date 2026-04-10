@@ -18,24 +18,6 @@ class BlockchainInit:
         self.public_key = os.path.join(self.data_path, "key.pub")
         self.validator_addresses = os.path.join(self.genesis_files_path, "validator_address.json")
         self.genesis_file = os.path.join(self.genesis_files_path, "genesis.json")
-        # start_metrics_server()  # Start the Prometheus metrics server
-
-    #---------------------Node Public and Private generation----------------------------
-
-    @track_performance
-    def generate_keys(self):
-        """Generates a new Ethereum account (private key and address)."""
-        account = Account.create()
-        os.makedirs(self.data_path, exist_ok=True)
-
-        with open(self.private_key, "w") as priv_file:
-            private_key_bytes = os.urandom(32)
-            priv_key = keys.PrivateKey(private_key_bytes)
-            priv_file.write(priv_key.to_hex())
-
-        with open(self.public_key, "w") as pub_file:
-            public_key = priv_key.public_key
-            pub_file.write(public_key.to_hex())
 
     #---------------------Create etherium accounts with ETH balance----------------------------
     @track_performance
@@ -54,13 +36,11 @@ class BlockchainInit:
         num_validators = int(num_validators) 
         
         CHAIN_ID = 1337
-        BLOCK_PERIOD_SECONDS = 5
+        BLOCK_PERIOD_SECONDS = 1
         EPOCH_LENGTH = 30000
-        REQUEST_TIMEOUT_SECONDS = 4
+        REQUEST_TIMEOUT_SECONDS = 2
 
-        # GAS_LIMIT = "0x47b760"
         GAS_LIMIT = "0x1C9C380"  # 30,000,000 in hex
-        # GAS_LIMIT = "0x1fffffffffffff"
         DIFFICULTY = "0x1"
 
         prefunded_accounts = [self.generate_account() for _ in range(num_prefunded_accounts)]
@@ -81,7 +61,6 @@ class BlockchainInit:
                 "timestamp": "0x58ee40ba",
                 "gasLimit": GAS_LIMIT,
                 "difficulty": DIFFICULTY,
-                # "mixHash": "0x63746963616c2062797a616e74696e6365206674756c7420746f6c6572616e6365",
                 "coinbase": "0x0000000000000000000000000000000000000000",
                 "alloc": {acct["address"]: {"balance": "90000000000000000000000"} for acct in prefunded_accounts}
             },
@@ -284,6 +263,52 @@ class BlockchainInit:
         except Exception as e:
             print(f"Unexpected error: {e}")
 
+    def _load_node_details(self):
+        node_details_path = os.path.join(self.root_path, "node-details.json")
+        if not os.path.exists(node_details_path):
+            raise FileNotFoundError(f"node-details.json not found at {node_details_path}")
+        with open(node_details_path, "r") as handle:
+            return json.load(handle)
+
+    def _detail(self, details, *keys, default=""):
+        for key in keys:
+            value = details.get(key)
+            if value not in (None, ""):
+                return value
+        return default
+
+    @track_performance
+    def self_register_root_node(self):
+        from orchestrator import Orchestrator
+
+        details = self._load_node_details()
+        orch = Orchestrator(repo_root=self.root_path)
+        node_sig = self._detail(details, "signature")
+        if not node_sig:
+            raise RuntimeError("node-details.json is missing signature")
+        if orch.is_node_registered(node_sig):
+            print("Root node already registered")
+            return
+
+        node_id = self._detail(details, "node_id", "nodeId")
+        node_name = self._detail(details, "node_name", "nodeName")
+        node_type = self._detail(details, "node_type", "nodeType", default="Cloud")
+        public_key = self._detail(details, "public_key", "publicKey")
+        address = self._detail(details, "address")
+        rpc_url = self._detail(details, "rpcURL", "rpc_url", default=os.getenv("ROOT_RPC_URL", "http://127.0.0.1:8545"))
+
+        orch.register_node(
+            node_id,
+            node_name,
+            node_type,
+            public_key,
+            address,
+            rpc_url,
+            "Cloud",
+            node_sig,
+        )
+        print("Root node self-registered on-chain")
+
 if __name__ == "__main__":
 
     blockchain_init = BlockchainInit()
@@ -296,7 +321,6 @@ if __name__ == "__main__":
             method = getattr(blockchain_init, method_name)
 
             if callable(method):
-                # arg_count = method.__code__.co_argcount - 1  # Subtract 1 for `self`
                 arg_count = len(inspect.signature(method).parameters)
                 
                 if len(method_args) == arg_count:

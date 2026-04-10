@@ -4,35 +4,42 @@ import tracemalloc
 import resource
 import functools
 import socket
-import shutil
 from flask import Flask, Response
-from prometheus_client import Summary, Gauge, multiprocess, REGISTRY, generate_latest, CONTENT_TYPE_LATEST, write_to_textfile
+from prometheus_client import Summary, Gauge, REGISTRY, generate_latest, CONTENT_TYPE_LATEST
 import csv
 
 root_path = os.path.dirname(os.path.abspath(__file__))
 
-# --- Setup Prometheus Multiprocessing ---
-PROMETHEUS_DIR = "/tmp/prometheus_multiproc"
-os.environ["PROMETHEUS_MULTIPROC_DIR"] = PROMETHEUS_DIR
-if os.path.exists(PROMETHEUS_DIR):
-    shutil.rmtree(PROMETHEUS_DIR)
-os.makedirs(PROMETHEUS_DIR)
+# --- Setup Prometheus registry ---
+# Do NOT set PROMETHEUS_MULTIPROC_DIR — each node process runs its own
+# single-process registry. Multiprocess mode would require a shared tmpfs
+# and causes MultiProcessCollector to shadow real metrics.
+os.environ.pop("PROMETHEUS_MULTIPROC_DIR", None)
 
-# Register the multiprocess collector
-multiprocess.MultiProcessCollector(REGISTRY)
+
+def _get_or_create_metric(factory, name, documentation, labelnames):
+    """Register a metric, silently reuse it if already registered."""
+    try:
+        return factory(name, documentation, labelnames)
+    except ValueError:
+        # Already registered in this Python process — retrieve by name.
+        for collector in list(REGISTRY._names_to_collectors.values()):
+            if getattr(collector, "_name", None) == name:
+                return collector
+        raise
 
 # --- Define Metrics ---
 # Prometheus metrics
-FUNCTION_DURATION = Summary("function_duration_seconds", "Time spent in function", ["function"])
-FUNCTION_MEMORY = Gauge("function_memory_kb", "Memory used by function (in KB)", ["function"])
-FUNCTION_CPU_USER = Gauge("function_cpu_user_seconds", "User CPU time used by function", ["function"])
-FUNCTION_CPU_SYSTEM = Gauge("function_cpu_system_seconds", "System CPU time used by function", ["function"])
-FUNCTION_CPU_TOTAL = Gauge("function_cpu_total_seconds", "Total CPU time (user + system) used by function", ["function"])
+FUNCTION_DURATION = _get_or_create_metric(Summary, "function_duration_seconds", "Time spent in function", ["function"])
+FUNCTION_MEMORY = _get_or_create_metric(Gauge, "function_memory_kb", "Memory used by function (in KB)", ["function"])
+FUNCTION_CPU_USER = _get_or_create_metric(Gauge, "function_cpu_user_seconds", "User CPU time used by function", ["function"])
+FUNCTION_CPU_SYSTEM = _get_or_create_metric(Gauge, "function_cpu_system_seconds", "System CPU time used by function", ["function"])
+FUNCTION_CPU_TOTAL = _get_or_create_metric(Gauge, "function_cpu_total_seconds", "Total CPU time (user + system) used by function", ["function"])
 
 # Request-level metrics
-REQUEST_DURATION = Summary('request_duration_seconds', 'Time for outgoing request', ['function'])
-REQUEST_PAYLOAD_SIZE = Gauge('request_payload_size_bytes', 'Payload size in bytes', ['function'])
-REQUEST_RESPONSE_SIZE = Gauge('request_response_size_bytes', 'Response size in bytes', ['function'])
+REQUEST_DURATION = _get_or_create_metric(Summary, 'request_duration_seconds', 'Time for outgoing request', ['function'])
+REQUEST_PAYLOAD_SIZE = _get_or_create_metric(Gauge, 'request_payload_size_bytes', 'Payload size in bytes', ['function'])
+REQUEST_RESPONSE_SIZE = _get_or_create_metric(Gauge, 'request_response_size_bytes', 'Response size in bytes', ['function'])
 
 
 
@@ -43,8 +50,6 @@ app = Flask(__name__)
 def metrics():
     """Expose Prometheus metrics."""
     data = generate_latest(REGISTRY)
-    # print("[Flask] Metrics endpoint accessed")
-    # print(data.decode('utf-8'))  # Log the metrics data
     return Response(data, mimetype=CONTENT_TYPE_LATEST)
 
 # --- Utility to Track Function Performance ---
@@ -103,7 +108,6 @@ def observe_request_metrics(func_name, payload_size, response_size, duration):
     REQUEST_PAYLOAD_SIZE.labels(func_name).set(payload_size)
     REQUEST_RESPONSE_SIZE.labels(func_name).set(response_size)
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-    # print(f"[Monitor] {timestamp} - Request Metrics - Function: {func_name}, Duration: {duration:.4f}s, Payload Size: {payload_size} bytes, Response Size: {response_size} bytes")
     csv_file = os.path.join(root_path, "measurements", "request_metrics.csv")
     file_exists = os.path.isfile(csv_file)
     with open(csv_file, mode='a', newline='') as f:
@@ -112,13 +116,7 @@ def observe_request_metrics(func_name, payload_size, response_size, duration):
             writer.writerow(["timestamp", "function", "duration_seconds", "payload_size_bytes", "response_size_bytes"])
         writer.writerow([timestamp, func_name, f"{duration:.4f}", payload_size, response_size])
 
-@track_performance
-def dummy_work():
-    print("Running dummy work...")
-    time.sleep(2)
-
 # --- Main Entry ---
 if __name__ == "__main__":
-    # dummy_work()  # Collect some metrics
     print("[Flask] Starting Flask server on port 9101...")
     app.run(host="0.0.0.0", port=9101)
