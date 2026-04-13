@@ -357,6 +357,20 @@ def build_comparison_table() -> Any:
     return read_json(RESULTS_DIR / "gas_comparison.json")
 
 
+def load_test_status(result: dict[str, Any] | None) -> tuple[str, int, int]:
+    payload = dict(result or {})
+    throttled = int(payload.get("throttled_count", 0) or 0)
+    non_throttle_errors = payload.get("non_throttle_error_count")
+    if non_throttle_errors is None:
+        non_throttle_errors = int(payload.get("error_count", 0) or 0)
+    failures = int(non_throttle_errors or 0)
+    if failures > 0:
+        return "\033[31m[FAIL]\033[0m", failures, throttled
+    if throttled > 0:
+        return "\033[33m[THROTTLED]\033[0m", 0, throttled
+    return "\033[32m[ok]\033[0m", 0, 0
+
+
 def tier_experiment(
     host: str,
     tier: str,
@@ -585,9 +599,11 @@ def main() -> None:
         result = run_load_test(tier_hosts["fog"], concurrency, load_body)
         elapsed = time.perf_counter() - t0
         rps = (result or {}).get("throughput_rps", "?")
-        errs = (result or {}).get("error_count", "?")
-        status = "\033[31m[FAIL]\033[0m" if errs else "\033[32m[ok]\033[0m"
-        print(f"done in {elapsed:.1f}s  rps={rps}  errors={errs}  {status}", flush=True)
+        status, errs, throttled = load_test_status(result if isinstance(result, dict) else None)
+        if throttled:
+            print(f"done in {elapsed:.1f}s  rps={rps}  throttled={throttled}  errors={errs}  {status}", flush=True)
+        else:
+            print(f"done in {elapsed:.1f}s  rps={rps}  errors={errs}  {status}", flush=True)
         load_results[str(concurrency)] = result
 
     # Inject externally-measured propagation rows into internal_latency_summary so

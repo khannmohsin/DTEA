@@ -86,3 +86,40 @@ cd node-registry-test && npx hardhat test
 ## Operations Guide
 
 Full deployment, policy, API, CLI, experiment, and troubleshooting documentation is in [OPERATIONS.md](./OPERATIONS.md).
+
+## Experiment Reproduction (ACM Results)
+
+Reset local runtime state:
+
+```bash
+rm -rf "$(pwd)/runtime/generated/acm-results"
+pkill -f "besu" ; pkill -f "BlockCap" ; pkill -f "orchestration_service" ; pkill -f "run_topology"
+pkill -9 -f "besu" ; pkill -9 -f "BlockCap"
+```
+
+Generate topology and run experiments:
+
+```bash
+./.venv/bin/python scripts/run_topology.py \
+  --mode local \
+  --runtime-backend native \
+  --cloud 1 --fog 1 --edge 1 --endpoint 1 \
+  --scenario acm-results
+
+./.venv/bin/python scripts/run_all_experiments.py \
+  --scenario-file runtime/generated/acm-results/topology.json \
+  --runs 1
+```
+
+Build gas and reports:
+
+```bash
+node scripts/measure_gas.js
+./.venv/bin/python scripts/build_gas_comparison.py
+./.venv/bin/python scripts/generate_matplotlib_report.py
+```
+
+Baseline curation rules:
+
+- Strict gas comparisons only: `experiment_baselines/gas_baselines.json`
+- Non-gas related-work metrics (latency/throughput/energy): `experiment_baselines/literature_metrics.json`

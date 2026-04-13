@@ -1,16 +1,31 @@
 {
-  "BlendCAC": {
-    "register": null,
-    "issue": null,
-    "revoke": null,
-    "delegate": null,
-    "check": null
+  "metadata": {
+    "version": 1,
+    "notes": [
+      "Use gas_cost values from paper tables when available.",
+      "Leave null when a paper does not report EVM gas costs."
+    ]
   },
-  "ACS-IoT": {
-    "register": null,
-    "issue": null,
-    "revoke": null,
-    "delegate": null,
-    "check": null
+  "systems": {
+    "BlendCAC": {
+      "source": "paper or benchmark source",
+      "metrics": {
+        "register": {"gas_cost": null},
+        "issue": {"gas_cost": null},
+        "revoke": {"gas_cost": null},
+        "delegate": {"gas_cost": null},
+        "check": {"gas_cost": null}
+      }
+    },
+    "ACS-IoT": {
+      "source": "paper or benchmark source",
+      "metrics": {
+        "register": {"gas_cost": null},
+        "issue": {"gas_cost": null},
+        "revoke": {"gas_cost": null},
+        "delegate": {"gas_cost": null},
+        "check": {"gas_cost": null}
+      }
+    }
   }
 }

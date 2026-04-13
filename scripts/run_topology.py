@@ -223,8 +223,12 @@ def ensure_containerized_root_enode(node_dir: Path, root_enode: str) -> None:
             target.write_text(rewritten.strip() + "\n")
 
 
+def local_url_for_container(url: str) -> str:
+    return str(url or "").replace("127.0.0.1", CONTAINER_HOST).replace("localhost", CONTAINER_HOST)
+
+
 def root_rpc_url_for_container(root_rpc_url: str) -> str:
-    return str(root_rpc_url or "").replace("127.0.0.1", CONTAINER_HOST).replace("localhost", CONTAINER_HOST)
+    return local_url_for_container(root_rpc_url)
 
 
 def host_total_memory_mb() -> int | None:
@@ -555,23 +559,44 @@ def render_client_env(api_port: int, rpc_port: int, p2p_port: int, host: str = L
     )
 
 
-def render_endpoint_env(api_port: int, rpc_url: str, host: str = LOCAL_HOST) -> str:
-    return (
+def render_endpoint_env(
+    api_port: int,
+    rpc_url: str,
+    host: str = LOCAL_HOST,
+    parent_url: str | None = None,
+) -> str:
+    payload = (
         f"FLASK_PORT={api_port}\n"
         f"NODE_URL=http://{host}:{api_port}\n"
         f"BESU_RPC_URL={rpc_url}\n"
     )
+    if parent_url:
+        payload += f"PARENT_URL={parent_url}\n"
+    return payload
 
 
 def write_client_env(node_dir: Path, api_port: int, rpc_port: int, p2p_port: int, host: str = LOCAL_HOST) -> None:
     (node_dir / ".env").write_text(render_client_env(api_port, rpc_port, p2p_port, host))
 
 
-def write_endpoint_env(node_dir: Path, api_port: int, rpc_url: str, host: str = LOCAL_HOST) -> None:
-    (node_dir / ".env").write_text(render_endpoint_env(api_port, rpc_url, host))
+def write_endpoint_env(
+    node_dir: Path,
+    api_port: int,
+    rpc_url: str,
+    host: str = LOCAL_HOST,
+    parent_url: str | None = None,
+) -> None:
+    (node_dir / ".env").write_text(render_endpoint_env(api_port, rpc_url, host, parent_url))
 
 
-def build_node_env(base_env: dict[str, str], *, spec: NodeSpec, root_rpc_url: str, host: str = LOCAL_HOST) -> dict[str, str]:
+def build_node_env(
+    base_env: dict[str, str],
+    *,
+    spec: NodeSpec,
+    root_rpc_url: str,
+    host: str = LOCAL_HOST,
+    parent_api_url: str | None = None,
+) -> dict[str, str]:
     env = dict(base_env)
     env["FLASK_PORT"] = str(spec.api_port)
     env["NODE_URL"] = f"http://{host}:{spec.api_port}"
@@ -582,6 +607,8 @@ def build_node_env(base_env: dict[str, str], *, spec: NodeSpec, root_rpc_url: st
         env["BESU_RPC_URL"] = f"http://{host}:{spec.rpc_port}"
     else:
         env["BESU_RPC_URL"] = root_rpc_url
+        if parent_api_url:
+            env["PARENT_URL"] = local_url_for_container(parent_api_url) if spec.runtime_backend == "container" else parent_api_url
     return env
 
 
@@ -1322,6 +1349,8 @@ def start_service_only(
                 f"NODE_URL=http://{LOCAL_HOST}:{api_port}",
                 "-e",
                 f"BESU_RPC_URL={endpoint_rpc_url}",
+                "-e",
+                f"PARENT_URL={env.get('PARENT_URL', '')}",
                 CONTAINER_IMAGE,
                 "sh",
                 "-lc",
@@ -1580,6 +1609,7 @@ def prepare_node(
     root_enode: str,
     *,
     root_rpc_url: str,
+    parent_api_url: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     node_dir = Path(spec.directory)
     print(f"[topology] preparing {spec.tier}{spec.ordinal} workspace in {node_dir}", flush=True)
@@ -1610,7 +1640,7 @@ def prepare_node(
         print(f"[topology] generating endpoint identity for {spec.tier}{spec.ordinal}", flush=True)
         shutil.copy2(root_node_registry_artifact(root_dir), node_dir / "data" / "NodeRegistry.json")
         shutil.copy2(root_dir / "prefunded_keys.json", node_dir / "prefunded_keys.json")
-        write_endpoint_env(node_dir, spec.api_port or 0, root_rpc_url)
+        write_endpoint_env(node_dir, spec.api_port or 0, root_rpc_url, parent_url=parent_api_url)
         payload = build_registration_payload(
             node_dir=node_dir,
             node_id=spec.node_id,
@@ -1745,12 +1775,14 @@ def append_node_to_scenario(
 
     try:
         print(f"[topology] provisioning {spec.tier}{spec.ordinal}", flush=True)
+        reg_url, reg_label = resolve_registration_url(spec.tier, spec.ordinal, manifest, root_api_url)
         root_enode = json_rpc(root_rpc_url, "admin_nodeInfo", [])["enode"]
         node_dir, payload = prepare_node(
             spec,
             root_dir,
             root_enode,
             root_rpc_url=root_rpc_url,
+            parent_api_url=reg_url if spec.tier == "endpoint" else None,
         )
         node_record = {
             **asdict(spec),
@@ -1773,6 +1805,7 @@ def append_node_to_scenario(
             spec=spec,
             root_rpc_url=root_rpc_url_for_container(root_rpc_url) if spec.runtime_backend == "container" else root_rpc_url,
             host=LOCAL_HOST,
+            parent_api_url=reg_url if spec.tier == "endpoint" else None,
         )
         logs_dir = scenario_dir / "logs"
         if spec.tier in {"fog", "edge"}:
@@ -1791,7 +1824,6 @@ def append_node_to_scenario(
             started_pids.extend(pid for pid in (control_pid, api_pid, chain_pid) if pid)
 
         print(f"[topology] registering {spec.tier}{spec.ordinal} with the root cloud", flush=True)
-        reg_url, reg_label = resolve_registration_url(spec.tier, spec.ordinal, manifest, root_api_url)
         print(f"[topology] registering {spec.tier}{spec.ordinal} with {reg_label}", flush=True)
         node_record["registration"] = post_registration(reg_url, payload)
         reg_status = (node_record["registration"] or {}).get("status")
@@ -2078,11 +2110,13 @@ def batch_main(argv: list[str] | None = None) -> None:
 
         for spec in specs:
             print(f"[topology] provisioning {spec.tier}{spec.ordinal}", flush=True)
+            reg_url, reg_label = resolve_registration_url(spec.tier, spec.ordinal, manifest, root_info["api_url"])
             node_dir, payload = prepare_node(
                 spec,
                 root_dir,
                 root_enode,
                 root_rpc_url=root_info["rpc_url"],
+                parent_api_url=reg_url if spec.tier == "endpoint" else None,
             )
             node_record = {
                 **asdict(spec),
@@ -2102,6 +2136,7 @@ def batch_main(argv: list[str] | None = None) -> None:
                 spec=spec,
                 root_rpc_url=root_rpc_url_for_container(root_info["rpc_url"]) if spec.runtime_backend == "container" else root_info["rpc_url"],
                 host=LOCAL_HOST,
+                parent_api_url=reg_url if spec.tier == "endpoint" else None,
             )
 
             if spec.tier in {"fog", "edge"}:
@@ -2120,7 +2155,6 @@ def batch_main(argv: list[str] | None = None) -> None:
                 started_pids.extend(pid for pid in (control_pid, api_pid, chain_pid) if pid)
 
             print(f"[topology] registering {spec.tier}{spec.ordinal} with the root cloud", flush=True)
-            reg_url, reg_label = resolve_registration_url(spec.tier, spec.ordinal, manifest, root_info["api_url"])
             print(f"[topology] registering {spec.tier}{spec.ordinal} with {reg_label}", flush=True)
             node_record["registration"] = post_registration(reg_url, payload)
             reg_status = (node_record["registration"] or {}).get("status")

@@ -162,8 +162,9 @@ def render_lifecycle_matrix(plot_dir: Path, rows: list[dict[str, Any]]) -> list[
         "delegatetoken": "delegate",
         "expirycheck": "expiry-check",
         "checkgrant": "check",
+        "registernode": "register",
     }
-    ops = ["issue", "revoke", "delegate", "expiry-check", "check", "revoke_propagation"]
+    ops = ["register", "issue", "revoke", "delegate", "expiry-check", "check", "revoke_propagation"]
     tiers = ["cloud", "fog", "edge", "endpoint"]
 
     table_rows: list[dict[str, Any]] = []
@@ -225,6 +226,7 @@ def _normalize_operation(raw_op: str) -> str | None:
         "revoketokenpropagation": "revoke_propagation",
         "expirycheck": "expiry-check",
         "checkgrant": "check",
+        "registernode": "register",
     }
     return op_alias.get(raw_op.lower().strip())
 
@@ -290,26 +292,35 @@ def render_revocation_propagation(plot_dir: Path, lifecycle_rows: list[dict[str,
 
 
 def render_gas_comparison(plot_dir: Path, table: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    systems = ["BlockCap", "BlendCAC", "ACS-IoT"]
     operations = ["register", "issue", "revoke", "delegate", "check"]
 
     rows = []
     indexed: dict[tuple[str, str], float] = {}
+    systems_seen: list[str] = []
     for row in table:
         op = str(row.get("operation", "")).lower()
         sys_name = str(row.get("system", ""))
         gas = float_or_none(row.get("gas_cost"))
+        if sys_name and sys_name not in systems_seen:
+            systems_seen.append(sys_name)
         if op and sys_name and gas is not None:
             indexed[(op, sys_name)] = gas
         rows.append({"operation": op, "system": sys_name, "gas_cost": row.get("gas_cost")})
 
+    systems = sorted([name for name in systems_seen if name and name != "BlockCap"])
+    if "BlockCap" in systems_seen:
+        systems = ["BlockCap", *systems]
+    if not systems:
+        systems = ["BlockCap"]
+
     x = list(range(len(operations)))
-    width = 0.22
+    width = max(0.08, min(0.8 / max(1, len(systems)), 0.35))
     fig, ax = plt.subplots(figsize=(10, 4.8))
 
+    center_offset = (len(systems) - 1) / 2.0
     for idx, system in enumerate(systems):
         vals = [indexed.get((op, system), 0.0) for op in operations]
-        xs = [v + (idx - 1) * width for v in x]
+        xs = [v + (idx - center_offset) * width for v in x]
         ax.bar(xs, vals, width=width, label=system)
 
     ax.set_xticks(x)
@@ -485,6 +496,13 @@ def main() -> None:
         operation="revoke",
         output_name="figure_06_token_revoke_latency_by_tier.png",
         title="Token Revoke Latency by Tier",
+    )
+    render_operation_by_tier(
+        plots_dir,
+        lifecycle_rows,
+        operation="register",
+        output_name="figure_11_registration_latency_by_tier.png",
+        title="Registration Latency by Tier",
     )
     revocation_rows = render_revocation_propagation(plots_dir, lifecycle_table_rows)
     if (plots_dir / "figure_d_revocation_propagation.png").exists():

@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "version": 1,
+    "updated_at": "2026-04-13",
+    "notes": [
+      "This file is intentionally limited to strict comparable blockchain access-control systems.",
+      "Only operation-level EVM gas values should be entered here for register/issue/revoke/delegate/check.",
+      "If a paper does not report operation-level EVM gas for those actions, keep gas_cost as null.",
+      "Some additional related-work entries are included for traceability, but remain null until operation-level EVM gas is reported."
+    ]
+  },
+  "systems": {
+    "BlendCAC": {
+      "source": "Related Work (project-specific references)",
+      "metrics": {
+        "register": {"gas_cost": null},
+        "issue": {"gas_cost": null},
+        "revoke": {"gas_cost": null},
+        "delegate": {"gas_cost": null},
+        "check": {"gas_cost": null}
+      }
+    },
+    "ACS-IoT": {
+      "source": "Related Work (project-specific references)",
+      "metrics": {
+        "register": {"gas_cost": null},
+        "issue": {"gas_cost": null},
+        "revoke": {"gas_cost": null},
+        "delegate": {"gas_cost": null},
+        "check": {"gas_cost": null}
+      }
+    },
+    "PriSec": {
+      "source": "Related Work/ssrn-5363395.pdf (reference to Sensors 2019 PriSec)",
+      "metrics": {
+        "register": {"gas_cost": null},
+        "issue": {"gas_cost": null},
+        "revoke": {"gas_cost": null},
+        "delegate": {"gas_cost": null},
+        "check": {"gas_cost": null}
+      }
+    },
+    "StrongBox": {
+      "source": "Related Work/ssrn-5363395.pdf (reference to ASPLOS 2018 StrongBox)",
+      "metrics": {
+        "register": {"gas_cost": null},
+        "issue": {"gas_cost": null},
+        "revoke": {"gas_cost": null},
+        "delegate": {"gas_cost": null},
+        "check": {"gas_cost": null}
+      }
+    }
+  }
+}

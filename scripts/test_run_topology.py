@@ -105,7 +105,7 @@ def test_generate_docker_compose_includes_expected_services():
     assert "edge1" in compose["services"]
     assert "endpoint1" in compose["services"]
     assert compose["services"]["fog1"]["environment"]["SIMULATED_DEVICE_ID"] == "jetson-orin-nano-8gb"
-    assert compose["services"]["endpoint1"]["environment"]["PARENT_URL"] == "http://fog1:5600"
+    assert compose["services"]["endpoint1"]["environment"]["PARENT_URL"] == "http://edge1:5600"
 
 
 def test_normalize_endpoint_roles_rejects_mismatched_count():
@@ -389,16 +389,97 @@ def test_build_node_env_uses_local_rpc_for_fog_and_root_rpc_for_endpoint():
         api_port=5006,
         rpc_port=None,
         p2p_port=None,
+        runtime_backend="native",
     )
 
     fog_env = topology.build_node_env(base_env, spec=fog_spec, root_rpc_url="http://127.0.0.1:44001")
-    endpoint_env = topology.build_node_env(base_env, spec=endpoint_spec, root_rpc_url="http://127.0.0.1:44001")
+    endpoint_env = topology.build_node_env(
+        base_env,
+        spec=endpoint_spec,
+        root_rpc_url="http://127.0.0.1:44001",
+        parent_api_url="http://127.0.0.1:46886",
+    )
 
     assert fog_env["BESU_RPC_URL"] == "http://127.0.0.1:8547"
     assert fog_env["FLASK_PORT"] == "5002"
     assert fog_env["P2P_PORT"] == "30304"
     assert endpoint_env["BESU_RPC_URL"] == "http://127.0.0.1:44001"
     assert endpoint_env["FLASK_PORT"] == "5006"
+    assert endpoint_env["PARENT_URL"] == "http://127.0.0.1:46886"
+
+
+def test_build_node_env_rewrites_endpoint_parent_for_container():
+    topology = load_module()
+    base_env = {"REAL_INTERACT": "1", "BESU_RPC_URL": "http://127.0.0.1:8545"}
+
+    endpoint_spec = topology.NodeSpec(
+        tier="endpoint",
+        ordinal=1,
+        node_type="Sensor",
+        name="Sensor1",
+        node_id="DEMO-END-001",
+        signature_seed="seed",
+        directory="/tmp/endpoint1",
+        api_port=5006,
+        runtime_backend="container",
+    )
+
+    endpoint_env = topology.build_node_env(
+        base_env,
+        spec=endpoint_spec,
+        root_rpc_url="http://192.168.65.254:44001",
+        parent_api_url="http://127.0.0.1:46886",
+    )
+
+    assert endpoint_env["PARENT_URL"] == "http://192.168.65.254:46886"
+
+
+def test_start_service_only_container_passes_parent_url(monkeypatch, tmp_path):
+    topology = load_module()
+
+    class DummyProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+    launches = []
+
+    def fake_launch_container_background(cmd, cwd, log_path, env=None):
+        launches.append({"cmd": cmd, "cwd": cwd, "log_path": log_path, "env": env})
+        return DummyProc(301)
+
+    monkeypatch.setattr(topology, "launch_container_background", fake_launch_container_background)
+    monkeypatch.setattr(topology, "wait_for", lambda predicate, timeout, interval=1.0: True)
+
+    spec = topology.NodeSpec(
+        tier="endpoint",
+        ordinal=1,
+        node_type="Sensor",
+        name="Sensor1",
+        node_id="DEMO-END-001",
+        signature_seed="seed",
+        directory=str(tmp_path / "endpoint1"),
+        api_port=5006,
+        runtime_backend="container",
+    )
+    node_dir = tmp_path / "endpoint1"
+    node_dir.mkdir(parents=True)
+
+    control_pid, api_pid = topology.start_service_only(
+        node_dir=node_dir,
+        spec=spec,
+        env={
+            "REAL_INTERACT": "1",
+            "BESU_RPC_URL": "http://192.168.65.254:44001",
+            "PARENT_URL": "http://192.168.65.254:46886",
+        },
+        logs_dir=tmp_path / "logs",
+        scenario_name="demo",
+    )
+
+    assert control_pid is None
+    assert api_pid == 301
+    assert len(launches) == 1
+    assert "PARENT_URL=http://192.168.65.254:46886" in launches[0]["cmd"]
 
 
 def test_ensure_root_contract_deployed_retries_transient_truffle_timeout(monkeypatch, tmp_path):
@@ -546,3 +627,64 @@ def test_append_node_to_scenario_keeps_ordinals_unique_and_only_first_fog_is_val
     assert prepared_specs[1].wants_validator is False
     assert updated_manifest["nodes"][0]["lifecycle_status"] == "retired"
     assert updated_manifest["nodes"][1]["lifecycle_status"] == "active"
+
+
+def test_append_endpoint_to_scenario_passes_parent_api_url(monkeypatch, tmp_path):
+    topology = load_module()
+    monkeypatch.setattr(topology, "GENERATED_ROOT", tmp_path)
+
+    scenario_dir = tmp_path / "demo-live"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = scenario_dir / "topology.json"
+    manifest_path.write_text(json.dumps({
+        "scenario": "demo-live",
+        "root": {
+            "directory": str(scenario_dir / "root"),
+            "api_url": "http://127.0.0.1:5600",
+            "rpc_url": "http://127.0.0.1:44001",
+        },
+        "nodes": [
+            {
+                "tier": "edge",
+                "ordinal": 1,
+                "name": "Edge1",
+                "api_url": "http://127.0.0.1:46886",
+                "lifecycle_status": "active",
+            }
+        ],
+    }))
+
+    monkeypatch.setattr(topology, "ensure_container_runtime_prereqs", lambda: None)
+    monkeypatch.setattr(topology, "ensure_container_image", lambda: None)
+    monkeypatch.setattr(topology, "ensure_container_network", lambda _name: None)
+    monkeypatch.setattr(topology, "validate_memory_budget", lambda _specs: None)
+    monkeypatch.setattr(topology, "json_rpc", lambda *_args, **_kwargs: {"enode": "enode://root@127.0.0.1:30303"})
+    monkeypatch.setattr(topology, "post_registration", lambda *_args, **_kwargs: {"ok": True, "status": "registered"})
+    monkeypatch.setattr(topology, "start_service_only", lambda **_kwargs: (None, 1201))
+
+    prepare_kwargs = []
+    build_env_kwargs = []
+
+    def fake_prepare_node(spec, *_args, **kwargs):
+        prepare_kwargs.append(kwargs)
+        node_dir = Path(spec.directory)
+        node_dir.mkdir(parents=True, exist_ok=True)
+        return node_dir, {"signature": f"sig-{spec.tier}-{spec.ordinal}"}
+
+    def fake_build_node_env(*_args, **kwargs):
+        build_env_kwargs.append(kwargs)
+        return {"PARENT_URL": kwargs.get("parent_api_url", "")}
+
+    monkeypatch.setattr(topology, "prepare_node", fake_prepare_node)
+    monkeypatch.setattr(topology, "build_node_env", fake_build_node_env)
+
+    result = topology.append_node_to_scenario(
+        scenario_name="demo-live",
+        tier="endpoint",
+        device_id="raspberry-pi-zero-2-w",
+        host="127.0.0.1",
+    )
+
+    assert result["tier"] == "endpoint"
+    assert prepare_kwargs[0]["parent_api_url"] == "http://127.0.0.1:46886"
+    assert build_env_kwargs[0]["parent_api_url"] == "http://127.0.0.1:46886"

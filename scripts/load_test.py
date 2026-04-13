@@ -5,6 +5,7 @@ import math
 import statistics
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Any
@@ -65,27 +66,41 @@ def main() -> None:
     lock = threading.Lock()
     latencies: list[float] = []
     errors = 0
+    throttled = 0
+    non_throttle_errors = 0
+    exception_count = 0
+    status_counts: Counter[str] = Counter()
     started = 0
     completed = 0
     start_time = time.monotonic()
     deadline = start_time + args.duration_cap
 
     def fire_once():
-        nonlocal errors
+        nonlocal errors, throttled, non_throttle_errors, exception_count
         req_start = time.perf_counter()
+        status_code = None
         try:
             if method == "GET":
                 resp = session.get(url, timeout=15)
             else:
                 resp = session.request(method, url, json=payload, timeout=15)
+            status_code = int(resp.status_code)
             ok = 200 <= resp.status_code < 300
         except Exception:
             ok = False
         elapsed = time.perf_counter() - req_start
         with lock:
             latencies.append(elapsed)
+            if status_code is None:
+                exception_count += 1
+            else:
+                status_counts[str(status_code)] += 1
             if not ok:
                 errors += 1
+                if status_code == 429:
+                    throttled += 1
+                else:
+                    non_throttle_errors += 1
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = set()
@@ -122,6 +137,10 @@ def main() -> None:
         "p95_latency_ms": round(p95_ms, 3),
         "throughput_rps": round(throughput_rps, 3),
         "error_count": errors,
+        "throttled_count": throttled,
+        "non_throttle_error_count": non_throttle_errors,
+        "exception_count": exception_count,
+        "status_counts": dict(sorted(status_counts.items())),
     }
 
     output_path = RESULTS_DIR / "load_test.json"

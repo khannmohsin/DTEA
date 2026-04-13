@@ -1,0 +1,113 @@
+{
+  "metadata": {
+    "version": 1,
+    "updated_at": "2026-04-13",
+    "notes": [
+      "Use this file for non-gas related-work comparisons.",
+      "Typical values here are latency, throughput, energy, memory, or footprint metrics.",
+      "Do not mix these values into gas_baselines.json unless they are operation-level EVM gas figures."
+    ]
+  },
+  "systems": {
+    "ASCON": {
+      "source": "Related Work/sensors-24-04008.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "SPECK": {
+      "source": "Related Work/sensors-24-04008.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "SIMON": {
+      "source": "Related Work/sensors-24-04008.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "TinyJAMBU": {
+      "source": "Related Work/sensors-24-04008.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "GIFT-COFB": {
+      "source": "Related Work/futureinternet-15-00054.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "Romulus": {
+      "source": "Related Work/sensors-24-04008.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "COMET-AES": {
+      "source": "Related Work/futureinternet-15-00054.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "Saturnin": {
+      "source": "Related Work/futureinternet-15-00054.pdf",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate exact values and table/figure references from the paper."
+      }
+    },
+    "PriSec": {
+      "source": "Related Work/ssrn-5363395.pdf (reference to Sensors 2019 PriSec)",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate explicit values from the original PriSec paper tables."
+      }
+    },
+    "StrongBox": {
+      "source": "Related Work/ssrn-5363395.pdf (reference to ASPLOS 2018 StrongBox)",
+      "metrics": {
+        "latency_ms": null,
+        "throughput_ops_s": null,
+        "energy_mj": null,
+        "memory_kb": null,
+        "notes": "Populate explicit values from the original StrongBox evaluation."
+      }
+    }
+  }
+}

@@ -57,7 +57,50 @@ def test_load_test_main_writes_results(monkeypatch, tmp_path):
     payload = json.loads((tmp_path / "load_test.json").read_text())
     assert payload["completed_requests"] == 4
     assert payload["error_count"] == 0
+    assert payload["throttled_count"] == 0
+    assert payload["non_throttle_error_count"] == 0
+    assert payload["status_counts"]["200"] == 4
     assert payload["throughput_rps"] > 0
+
+
+def test_load_test_main_classifies_429_as_throttled(monkeypatch, tmp_path):
+    load_test = load_module("load_test_throttle_mod", REPO_ROOT / "scripts" / "load_test.py")
+    monkeypatch.setattr(load_test, "RESULTS_DIR", tmp_path)
+
+    class FakeResponse:
+        def __init__(self, status_code=200):
+            self.status_code = status_code
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, _url, timeout=15):
+            return self.request("GET", _url, timeout=timeout)
+
+        def request(self, _method, _url, json=None, timeout=15):
+            self.calls += 1
+            return FakeResponse(429 if self.calls % 2 == 0 else 200)
+
+    monkeypatch.setattr(load_test.requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(sys, "argv", [
+        "load_test.py",
+        "--host", "http://localhost:5600",
+        "--operation", "health",
+        "--concurrency", "2",
+        "--total-requests", "4",
+        "--duration-cap", "5",
+    ])
+
+    load_test.main()
+
+    payload = json.loads((tmp_path / "load_test.json").read_text())
+    assert payload["completed_requests"] == 4
+    assert payload["error_count"] == 2
+    assert payload["throttled_count"] == 2
+    assert payload["non_throttle_error_count"] == 0
+    assert payload["status_counts"]["200"] == 2
+    assert payload["status_counts"]["429"] == 2
 
 
 def test_run_all_experiments_main_writes_aggregate(monkeypatch, tmp_path):
@@ -120,6 +163,22 @@ def test_run_all_experiments_main_writes_aggregate(monkeypatch, tmp_path):
     assert payload["gas_summary"]["issueToken"]["count"] == 2
     assert payload["contract_metrics"][0]["contract"] == "TOTALS"
     assert payload["gas_comparison"]["baseline_complete"] is False
+
+
+def test_load_test_status_treats_pure_429_results_as_throttled():
+    experiments = load_module("run_all_experiments_throttle_mod", REPO_ROOT / "scripts" / "run_all_experiments.py")
+
+    status, errors, throttled = experiments.load_test_status({
+        "error_count": 200,
+        "throttled_count": 200,
+        "non_throttle_error_count": 0,
+        "throughput_rps": 123.0,
+    })
+
+    assert "THROTTLED" in status
+    assert "[FAIL]" not in status
+    assert errors == 0
+    assert throttled == 200
 
 
 def test_experimental_setup_uses_live_validator_set_when_manifest_is_pending(monkeypatch, tmp_path):

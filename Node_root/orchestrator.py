@@ -396,8 +396,8 @@ class Orchestrator:
                 "gasPrice": 0,
                 "nonce": nonce,
             })
-        signed = self._w3.eth.account.sign_transaction(tx, acct.key)
-        tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
+            signed = self._w3.eth.account.sign_transaction(tx, acct.key)
+            tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.01)
         receipt_dict = dict(receipt)
         if int(receipt_dict.get("status", 1) or 0) == 0:
