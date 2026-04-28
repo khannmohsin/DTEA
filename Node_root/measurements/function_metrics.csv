@@ -688,3 +688,4 @@ timestamp,function,duration_seconds,memory_kb,total_cpu_time_seconds
 2026-04-10 14:04:10,create_qbft_file,0.0006,5.97,0.0006
 2026-04-10 14:42:01,create_qbft_file,0.0005,6.03,0.0006
 2026-04-10 16:21:40,create_qbft_file,0.0007,6.34,0.0007
+2026-04-13 14:13:56,create_qbft_file,0.0008,8.37,0.0008

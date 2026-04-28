@@ -4803,6 +4803,16 @@ def make_app(repo_root: str | None = None, node_role: str | None = None) -> Flas
         # - wants_validator (bool)
         try:
             out = orch.registration_flow(req)
+            if not out.get("ok", True):
+                why = out.get("why", "registration_flow_rejected")
+                orch.finish_flow(
+                    "error",
+                    stage="registration_finished",
+                    message=f"Registration flow rejected: {why}",
+                    details={"why": why},
+                    from_signature=req.get("signature"),
+                )
+                return err(why, 502, detail=why)
             try:
                 # Only Fog/Cloud nodes can be validators in your model
                 if req.get("node_type") in {"Fog", "Cloud"}:
@@ -5369,20 +5379,24 @@ def make_app(repo_root: str | None = None, node_role: str | None = None) -> Flas
         deny = _role_allows("cloud", "fog", "edge", "endpoint")
         if deny:
             return deny
-        from_sig = request.args.get("from_signature")
-        to_sig   = request.args.get("to_signature")
-        method   = request.args.get("method")          # e.g., GET/POST/PUT/DELETE
-        path     = request.args.get("resource_path")   # e.g., /temperature
-        ctx      = request.args.get("ctx")             # optional raw ctx (api:METHOD:/path)
+        from_sig  = request.args.get("from_signature")
+        to_sig    = request.args.get("to_signature")
+        policy_id = request.args.get("policy_id")      # direct lookup by policy ID
+        method    = request.args.get("method")          # e.g., GET/POST/PUT/DELETE
+        path      = request.args.get("resource_path")   # e.g., /temperature
+        ctx       = request.args.get("ctx")             # optional raw ctx (api:METHOD:/path)
 
         if not from_sig or not to_sig:
             return err("from_signature and to_signature are required", 422)
 
         try:
-            gx = orch.get_grant_ex_auto(
-                from_sig, to_sig,
-                method=method, resource_path=path, ctx=ctx
-            )
+            if policy_id is not None:
+                gx = orch.get_grant_ex_any(from_sig, to_sig, int(policy_id))
+            else:
+                gx = orch.get_grant_ex_auto(
+                    from_sig, to_sig,
+                    method=method, resource_path=path, ctx=ctx
+                )
             return ok({"grant": gx})
         except Exception as e:
             return err("grant_query_failed", 500, detail=str(e))
@@ -5670,6 +5684,20 @@ def make_app(repo_root: str | None = None, node_role: str | None = None) -> Flas
     #@track_performance
     def stop_motor():
         return _simple_access("DELETE")
+
+    @app.post("/admin/cache/clear")
+    @require_admin
+    def clear_grant_cache():
+        """Clear all in-memory caches so the next access request hits the chain (true cold path)."""
+        with orch._grant_cache_lock:
+            orch._grant_cache.clear()
+        with orch._grant_policy_cache_lock:
+            orch._grant_policy_id_cache.clear()
+        with orch._policy_details_cache_lock:
+            orch._policy_details_cache.clear()
+        with orch._policy_lock:
+            orch.policy_index.clear()
+        return ok({"cleared": True})
 
     if policy_file:
         threading.Thread(target=_load_policy_file_at_startup, name="policy-file-loader", daemon=True).start()

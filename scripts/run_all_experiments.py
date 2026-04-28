@@ -50,7 +50,6 @@ LIFECYCLE_OPERATIONS = {
     "expiryCheck",
     "checkGrant",
     "ensurePolicy",
-    "registerNode",
 }
 
 
@@ -77,6 +76,14 @@ def timed_request(method: str, url: str, *, json_body: dict[str, Any] | None = N
     }
 
 
+def clear_grant_cache(host: str) -> None:
+    """Clear the in-memory grant cache on a node so the next access hits the chain cold."""
+    try:
+        requests.post(host.rstrip("/") + "/admin/cache/clear", timeout=5)
+    except Exception:
+        pass
+
+
 def percentile(values: list[float], q: float) -> float:
     if not values:
         return 0.0
@@ -94,6 +101,17 @@ def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "p95_latency_ms": round(percentile(latencies, 0.95), 3),
         "error_count": sum(0 if sample["ok"] else 1 for sample in samples),
         "samples": samples,
+    }
+
+
+def summarize_success_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    successful = [sample for sample in samples if sample.get("ok")]
+    latencies = [float(sample["latency_ms"]) for sample in successful]
+    return {
+        "success_count": len(successful),
+        "success_mean_latency_ms": round(statistics.fmean(latencies), 3) if latencies else 0.0,
+        "success_stddev_latency_ms": round(statistics.pstdev(latencies), 3) if len(latencies) > 1 else 0.0,
+        "success_p95_latency_ms": round(percentile(latencies, 0.95), 3),
     }
 
 
@@ -175,9 +193,95 @@ def gather_registered_signatures(scenario: dict[str, Any]) -> list[str]:
     sigs: list[str] = []
     for node in scenario.get("nodes", []):
         sig = ((node.get("payload") or {}).get("signature"))
-        if sig:
-            sigs.append(sig)
+        if not sig:
+            continue
+        reg = node.get("registration") or {}
+        # Only trust nodes with actual on-chain evidence (tx hash present)
+        if reg.get("tx") is None and reg.get("status") not in {
+            "already_registered",
+            "validator_already_included",
+        }:
+            print(
+                f"[warn] skipping {node.get('name', '?')}: registration has no tx "
+                f"(status={reg.get('status')!r})"
+            )
+            continue
+        sigs.append(sig)
     return sigs
+
+
+def root_signature(scenario: dict[str, Any]) -> str | None:
+    root = scenario.get("root") or {}
+    details = root.get("node_details") or {}
+    sig = details.get("signature")
+    return str(sig).strip() if sig else None
+
+
+def node_signature(scenario: dict[str, Any], tier: str) -> str | None:
+    node = first_node(scenario, tier)
+    sig = ((node or {}).get("payload") or {}).get("signature")
+    return str(sig).strip() if sig else None
+
+
+def resolve_experiment_case(scenario: dict[str, Any], tier: str) -> dict[str, Any]:
+    root_sig = root_signature(scenario)
+    fog_sig = node_signature(scenario, "fog")
+    edge_sig = node_signature(scenario, "edge")
+    endpoint_sig = node_signature(scenario, "endpoint")
+
+    if tier == "cloud" and root_sig and fog_sig and edge_sig:
+        return {
+            "target_sig": fog_sig,
+            "requester_sig": fog_sig,
+            "delegate_parent_sig": fog_sig,
+            "delegate_target_sig": fog_sig,
+            "delegatee_sig": edge_sig,
+            "delegate_enabled": True,
+        }
+    if tier == "fog" and fog_sig and edge_sig and endpoint_sig:
+        # Fog holds a delegable fog→edge grant; delegates it down to endpoint.
+        # child grant becomes endpoint→edge (endpoint can now access edge resources).
+        return {
+            "target_sig": edge_sig,
+            "requester_sig": fog_sig,
+            "delegate_parent_sig": fog_sig,
+            "delegate_target_sig": edge_sig,
+            "delegatee_sig": endpoint_sig,
+            "delegate_enabled": True,
+        }
+    if tier == "edge" and fog_sig and edge_sig and endpoint_sig:
+        return {
+            "target_sig": endpoint_sig,
+            "requester_sig": fog_sig,
+            "delegate_parent_sig": edge_sig,
+            "delegate_target_sig": endpoint_sig,
+            "delegatee_sig": fog_sig,
+            "delegate_enabled": True,
+        }
+    if tier == "endpoint" and endpoint_sig and edge_sig:
+        # Endpoint requests access to edge (its parent) — correct direction.
+        # Request is sent to endpoint host; endpoint forwards to parent (edge) which issues the grant.
+        return {
+            "target_sig": edge_sig,
+            "requester_sig": endpoint_sig,
+            "delegate_parent_sig": endpoint_sig,
+            "delegate_target_sig": edge_sig,
+            "delegatee_sig": fog_sig,
+            "delegate_enabled": False,
+        }
+
+    target_sig = choose_target_signature(scenario, tier)
+    if not target_sig:
+        return {"target_sig": None, "requester_sig": None, "delegatee_sig": None, "delegate_enabled": True}
+    requester_sig, delegatee_sig = choose_actor_signatures(scenario, target_sig)
+    return {
+        "target_sig": target_sig,
+        "requester_sig": requester_sig,
+        "delegate_parent_sig": requester_sig,
+        "delegate_target_sig": target_sig,
+        "delegatee_sig": delegatee_sig,
+        "delegate_enabled": True,
+    }
 
 
 def tier_hosts_from_args(args: argparse.Namespace, scenario: dict[str, Any] | None) -> dict[str, str]:
@@ -203,7 +307,13 @@ def tier_hosts_from_args(args: argparse.Namespace, scenario: dict[str, Any] | No
 def choose_actor_signatures(scenario: dict[str, Any], target_sig: str) -> tuple[str, str]:
     sigs = [sig for sig in gather_registered_signatures(scenario) if sig != target_sig]
     if len(sigs) < 2:
-        raise RuntimeError("scenario does not contain enough registered signatures for experiments")
+        all_sigs = gather_registered_signatures(scenario)
+        total_nodes = len(scenario.get("nodes", []))
+        raise RuntimeError(
+            f"need ≥3 on-chain registered nodes, but only {len(all_sigs)} of "
+            f"{total_nodes} nodes have registration TX evidence. "
+            f"Re-generate topology so all nodes register with the root."
+        )
     return sigs[0], sigs[1]
 
 
@@ -272,7 +382,7 @@ def measure_revocation_propagation(
     while time.perf_counter() < deadline:
         try:
             resp = requests.get(grant_url, params=params, timeout=5)
-            if resp.ok and not resp.json().get("granted", True):
+            if resp.ok and resp.json().get("grant", {}).get("isRevoked", False):
                 return round((time.perf_counter() - start) * 1000, 3)
         except Exception:
             pass
@@ -348,6 +458,57 @@ def experimental_setup(scenario: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def collect_topology_registration_rows(scenario: dict[str, Any] | None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not scenario:
+        return rows
+    for node in scenario.get("nodes", []):
+        reg = node.get("registration") or {}
+        latency_ms = reg.get("registration_latency_ms")
+        tier = str(node.get("tier") or "").lower()
+        if latency_ms is None or not tier:
+            continue
+        rows.append(
+            {
+                "tier": tier,
+                "operation": "registerNode",
+                "condition": "cold",
+                "mean_latency_ms": round(float(latency_ms), 3),
+                "stddev_latency_ms": 0.0,
+                "count": 1,
+                "source_key": f"topologyRegistration|{tier}|cold",
+                "status": reg.get("status"),
+                "wants_validator": bool(node.get("wants_validator")),
+            }
+        )
+    return rows
+
+
+def collect_validator_promotion_rows(scenario: dict[str, Any] | None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not scenario:
+        return rows
+    for node in scenario.get("nodes", []):
+        reg = node.get("registration") or {}
+        latency_ms = reg.get("validator_promotion_latency_ms")
+        tier = str(node.get("tier") or "").lower()
+        if latency_ms is None or not tier:
+            continue
+        rows.append(
+            {
+                "tier": tier,
+                "operation": "validatorPromotion",
+                "condition": "cold",
+                "mean_latency_ms": round(float(latency_ms), 3),
+                "stddev_latency_ms": 0.0,
+                "count": 1,
+                "source_key": f"validatorPromotion|{tier}|cold",
+                "status": reg.get("status"),
+            }
+        )
+    return rows
+
+
 def build_comparison_table() -> Any:
     cmd = [
         sys.executable,
@@ -378,6 +539,10 @@ def tier_experiment(
     requester_sig: str,
     delegatee_sig: str,
     runs: int,
+    *,
+    delegate_parent_sig: str | None = None,
+    delegate_target_sig: str | None = None,
+    delegate_enabled: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[float]]:
     """Run a full experiment set against one tier host.
 
@@ -394,7 +559,10 @@ def tier_experiment(
     tier_start = time.perf_counter()
 
     for idx in range(runs):
+        seed_from_sig = delegate_parent_sig or requester_sig
+        seed_to_sig = delegate_target_sig or target_sig
         resource_path = f"/experiments/{tier}/{idx}/{int(time.time() * 1000)}"
+        clear_grant_cache(host)
         cold = timed_request("POST", host.rstrip("/") + "/access", json_body=access_body(requester_sig, target_sig, resource_path))
         warm = timed_request("POST", host.rstrip("/") + "/access", json_body=access_body(requester_sig, target_sig, resource_path))
         grant_view = timed_request(
@@ -413,37 +581,45 @@ def tier_experiment(
         seed = timed_request(
             "POST",
             host.rstrip("/") + "/access",
-            json_body=access_body(requester_sig, target_sig, delegable_resource, allow_delegation=True, delegation_depth=2),
+            json_body=access_body(seed_from_sig, seed_to_sig, delegable_resource, allow_delegation=True, delegation_depth=2),
         )
         seed_grant = timed_request(
             "GET",
             host.rstrip("/") + "/grant",
             params={
-                "from_signature": requester_sig,
-                "to_signature": target_sig,
+                "from_signature": seed_from_sig,
+                "to_signature": seed_to_sig,
                 "method": "GET",
                 "resource_path": delegable_resource,
             },
         )
         seed_policy_id = extract_policy_id(seed.get("payload")) or extract_policy_id(seed_grant.get("payload")) or policy_id
-        delegate = timed_request(
-            "POST",
-            host.rstrip("/") + "/delegate",
-            json_body={
-                "parent_from_sig": requester_sig,
-                "to_sig": target_sig,
-                "child_from_sig": delegatee_sig,
-                "policy_id": seed_policy_id,
-                "ops_csv": "READ",
-                "child_expiry_secs": 600,
-            },
-        )
+        if delegate_enabled:
+            delegate = timed_request(
+                "POST",
+                host.rstrip("/") + "/delegate",
+                json_body={
+                    "parent_from_sig": seed_from_sig,
+                    "to_sig": seed_to_sig,
+                    "child_from_sig": delegatee_sig,
+                    "policy_id": seed_policy_id,
+                    "ops_csv": "READ",
+                    "child_expiry_secs": 600,
+                },
+            )
+        else:
+            delegate = {
+                "status_code": 200,
+                "latency_ms": 0.0,
+                "ok": True,
+                "payload": {"ok": True, "skipped": True, "reason": "delegation_unavailable_on_tier"},
+            }
         expiry = timed_request(
             "GET",
             host.rstrip("/") + "/expiry-check",
             params={
-                "from_signature": requester_sig,
-                "to_signature": target_sig,
+                "from_signature": seed_from_sig,
+                "to_signature": seed_to_sig,
                 "policy_id": seed_policy_id,
             },
         )
@@ -451,22 +627,45 @@ def tier_experiment(
             "POST",
             host.rstrip("/") + "/revoke-grant",
             json_body={
-                "from_signature": requester_sig,
-                "to_signature": target_sig,
+                "from_signature": seed_from_sig,
+                "to_signature": seed_to_sig,
                 "policy_id": seed_policy_id,
             },
         )
+
+        # Revoke the cold/warm grant so the next iteration starts truly cold on-chain.
+        if policy_id:
+            try:
+                requests.post(
+                    host.rstrip("/") + "/revoke-grant",
+                    json={"from_signature": requester_sig, "to_signature": target_sig, "policy_id": policy_id},
+                    timeout=15,
+                )
+            except Exception:
+                pass
+            clear_grant_cache(host)
 
 
         # Measure propagation: poll /grant until granted:false.
         # Start timer immediately after revoke HTTP response (tx confirmed).
         if revoke.get("ok"):
-            prop_ms = measure_revocation_propagation(host, requester_sig, target_sig, seed_policy_id)
+            prop_ms = measure_revocation_propagation(host, seed_from_sig, seed_to_sig, seed_policy_id)
             if prop_ms is not None:
                 propagation_samples.append(prop_ms)
 
+        # For cold rows: if policy was also created, record grant-only latency separately
+        # so tiers can be compared fairly (policy creation only happens at cloud/policyAdmin).
+        cold_payload = cold.get("payload") or {}
+        cold_grant_only_ms = cold_payload.get("grant_latency_ms") if isinstance(cold_payload, dict) else None
+        cold_policy_created = bool(cold_payload.get("policy_created")) if isinstance(cold_payload, dict) else False
+        cold_row = {"tier": tier, "condition": "cold", **cold}
+        if cold_policy_created and cold_grant_only_ms is not None:
+            cold_row["policy_latency_ms"] = cold_payload.get("policy_latency_ms")
+            cold_row["grant_only_latency_ms"] = cold_grant_only_ms
+            cold_row["policy_created"] = True
+
         roundtrip_rows.extend([
-            {"tier": tier, "condition": "cold", **cold},
+            cold_row,
             {"tier": tier, "condition": "warm", **warm},
         ])
         lifecycle_samples.extend([
@@ -507,7 +706,8 @@ def summarize_roundtrip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for (tier, condition), samples in sorted(grouped.items()):
         summary = summarize_samples(samples)
-        out.append({
+        success_summary = summarize_success_samples(samples)
+        entry: dict[str, Any] = {
             "tier": tier,
             "condition": condition,
             "count": summary["count"],
@@ -515,7 +715,21 @@ def summarize_roundtrip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "stddev_latency_ms": summary["stddev_latency_ms"],
             "p95_latency_ms": summary["p95_latency_ms"],
             "error_count": summary["error_count"],
-        })
+            **success_summary,
+        }
+        # For cold rows, also summarize grant-only latency (excludes policy creation)
+        # so all tiers are comparable on the same basis.
+        if condition == "cold":
+            grant_only_values = [
+                r["grant_only_latency_ms"]
+                for r in samples
+                if r.get("grant_only_latency_ms") is not None
+            ]
+            if grant_only_values:
+                entry["grant_only_mean_latency_ms"] = round(sum(grant_only_values) / len(grant_only_values), 3)
+                entry["grant_only_p95_latency_ms"] = percentile(grant_only_values, 0.95)
+                entry["grant_only_count"] = len(grant_only_values)
+        out.append(entry)
     return out
 
 
@@ -561,12 +775,22 @@ def main() -> None:
 
     if scenario:
         for tier, host in tier_hosts.items():
-            target_sig = choose_target_signature(scenario, tier)
-            if not target_sig:
+            case = resolve_experiment_case(scenario, tier)
+            target_sig = case.get("target_sig")
+            requester_sig = case.get("requester_sig")
+            delegatee_sig = case.get("delegatee_sig")
+            if not target_sig or not requester_sig or not delegatee_sig:
                 continue
-            requester_sig, delegatee_sig = choose_actor_signatures(scenario, target_sig)
             rt_rows, life_rows, prop_samples = tier_experiment(
-                host, tier, target_sig, requester_sig, delegatee_sig, args.runs
+                host,
+                tier,
+                target_sig,
+                requester_sig,
+                delegatee_sig,
+                args.runs,
+                delegate_parent_sig=str(case.get("delegate_parent_sig") or requester_sig),
+                delegate_target_sig=str(case.get("delegate_target_sig") or target_sig),
+                delegate_enabled=bool(case.get("delegate_enabled", True)),
             )
             roundtrip_rows.extend(rt_rows)
             http_lifecycle_rows.extend(life_rows)
@@ -585,9 +809,12 @@ def main() -> None:
 
     load_body = None
     if scenario:
-        fog_sig = ((first_node(scenario, "fog") or {}).get("payload") or {}).get("signature")
-        requester_sig, _delegatee_sig = choose_actor_signatures(scenario, fog_sig)
-        load_body = access_body(requester_sig, fog_sig, "/load/fog/shared")
+        case = resolve_experiment_case(scenario, "fog")
+        load_body = access_body(
+            str(case.get("requester_sig") or ""),
+            str(case.get("target_sig") or ""),
+            "/load/fog/shared",
+        )
     else:
         load_body = {"method": "GET", "resource_path": "/temperature", "from_signature": "sig-a", "to_signature": "sig-b"}
 
@@ -624,20 +851,38 @@ def main() -> None:
     print(f"\n\033[1m── Gas comparison ──\033[0m")
     print(f"  building ... ", end="", flush=True)
     gas_summary = read_json(RESULTS_DIR / "gas_summary.json")
+    # Generate contract metrics on-the-fly if the file is absent
+    if not (RESULTS_DIR / "contract_metrics.json").exists():
+        try:
+            subprocess.run(
+                ["node", str(REPO_ROOT / "scripts" / "collect_contract_metrics.js")],
+                cwd=REPO_ROOT, check=True, capture_output=True,
+            )
+        except Exception:
+            pass  # non-fatal; table will be empty if it still doesn't exist
     contract_metrics = read_json(RESULTS_DIR / "contract_metrics.json")
     gas_comparison = build_comparison_table()
     print("\033[32mdone\033[0m", flush=True)
+    topology_registration_rows = collect_topology_registration_rows(scenario)
+    validator_promotion_rows = collect_validator_promotion_rows(scenario)
     result = {
         "experimental_setup": experimental_setup(scenario),
         "end_to_end_latency": summarize_roundtrip(roundtrip_rows),
         "end_to_end_latency_raw": roundtrip_rows,
         "token_lifecycle_latency": extract_lifecycle_rows(internal_latency_summary),
+        "topology_registration_latency": topology_registration_rows,
+        "validator_promotion_latency": validator_promotion_rows,
         "token_lifecycle_http": http_lifecycle_rows,
         "internal_latency_summary": internal_latency_summary,
         "load_tests": load_results,
         "gas_summary": gas_summary,
         "contract_metrics": contract_metrics,
         "gas_comparison": gas_comparison,
+        "analysis_notes": {
+            "latency_model": "Warm read-path latencies represent cache or read-only behavior; cold write-path latencies include synchronous QBFT-backed transaction confirmation and are not directly comparable to warm-read latencies.",
+            "load_tests": "Load-test success latency is reported separately from 429 throttling so overload behavior does not distort successful-request latency.",
+            "registration": "Topology registration latency is tracked separately from internal registerNode summaries; endpoint registration is reported separately because its bootstrap path differs from fog and edge.",
+        },
     }
 
     output_path = RESULTS_DIR / "experimental_results.json"

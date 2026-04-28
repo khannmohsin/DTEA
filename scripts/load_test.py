@@ -25,6 +25,23 @@ def percentile(values: list[float], q: float) -> float:
     return ordered[idx]
 
 
+def summarize_latency_ms(latencies: list[float]) -> dict[str, float]:
+    if not latencies:
+        return {
+            "mean_latency_ms": 0.0,
+            "stddev_latency_ms": 0.0,
+            "p95_latency_ms": 0.0,
+        }
+    mean_ms = statistics.fmean(latencies) * 1000
+    stddev_ms = (statistics.pstdev(latencies) * 1000) if len(latencies) > 1 else 0.0
+    p95_ms = percentile(latencies, 0.95) * 1000
+    return {
+        "mean_latency_ms": round(mean_ms, 3),
+        "stddev_latency_ms": round(stddev_ms, 3),
+        "p95_latency_ms": round(p95_ms, 3),
+    }
+
+
 def resolve_request(host: str, operation: str, method: str | None, path_override: str | None, body: dict[str, Any] | None):
     path_map = {
         "health": ("GET", "/health"),
@@ -65,6 +82,9 @@ def main() -> None:
     session = requests.Session()
     lock = threading.Lock()
     latencies: list[float] = []
+    success_latencies: list[float] = []
+    throttled_latencies: list[float] = []
+    error_latencies: list[float] = []
     errors = 0
     throttled = 0
     non_throttle_errors = 0
@@ -93,8 +113,15 @@ def main() -> None:
             latencies.append(elapsed)
             if status_code is None:
                 exception_count += 1
+                error_latencies.append(elapsed)
             else:
                 status_counts[str(status_code)] += 1
+                if ok:
+                    success_latencies.append(elapsed)
+                elif status_code == 429:
+                    throttled_latencies.append(elapsed)
+                else:
+                    error_latencies.append(elapsed)
             if not ok:
                 errors += 1
                 if status_code == 429:
@@ -118,9 +145,10 @@ def main() -> None:
             completed += len(done)
 
     wall_seconds = max(0.001, time.monotonic() - start_time)
-    mean_ms = statistics.fmean(latencies) * 1000 if latencies else 0.0
-    stddev_ms = (statistics.pstdev(latencies) * 1000) if len(latencies) > 1 else 0.0
-    p95_ms = percentile(latencies, 0.95) * 1000
+    all_latency = summarize_latency_ms(latencies)
+    success_latency = summarize_latency_ms(success_latencies)
+    throttled_latency = summarize_latency_ms(throttled_latencies)
+    error_latency = summarize_latency_ms(error_latencies)
     throughput_rps = completed / wall_seconds
 
     result = {
@@ -132,12 +160,19 @@ def main() -> None:
         "total_requests": started,
         "completed_requests": completed,
         "duration_seconds": round(wall_seconds, 3),
-        "mean_latency_ms": round(mean_ms, 3),
-        "stddev_latency_ms": round(stddev_ms, 3),
-        "p95_latency_ms": round(p95_ms, 3),
+        **all_latency,
+        "success_count": len(success_latencies),
+        "success_mean_latency_ms": success_latency["mean_latency_ms"],
+        "success_stddev_latency_ms": success_latency["stddev_latency_ms"],
+        "success_p95_latency_ms": success_latency["p95_latency_ms"],
+        "throttled_mean_latency_ms": throttled_latency["mean_latency_ms"],
+        "throttled_p95_latency_ms": throttled_latency["p95_latency_ms"],
+        "error_mean_latency_ms": error_latency["mean_latency_ms"],
+        "error_p95_latency_ms": error_latency["p95_latency_ms"],
         "throughput_rps": round(throughput_rps, 3),
         "error_count": errors,
         "throttled_count": throttled,
+        "throttled_rate": round((throttled / completed), 4) if completed else 0.0,
         "non_throttle_error_count": non_throttle_errors,
         "exception_count": exception_count,
         "status_counts": dict(sorted(status_counts.items())),

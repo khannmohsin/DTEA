@@ -93,6 +93,7 @@ Reset local runtime state:
 
 ```bash
 rm -rf "$(pwd)/runtime/generated/acm-results"
+rm -rf "$(pwd)/results"
 pkill -f "besu" ; pkill -f "BlockCap" ; pkill -f "orchestration_service" ; pkill -f "run_topology"
 pkill -9 -f "besu" ; pkill -9 -f "BlockCap"
 ```
@@ -117,6 +118,7 @@ Build gas and reports:
 node scripts/measure_gas.js
 ./.venv/bin/python scripts/build_gas_comparison.py
 ./.venv/bin/python scripts/generate_matplotlib_report.py
+./.venv/bin/python scripts/generate_matplotlib_report.py --results-dir results --scenario acm-results
 ```
 
 Baseline curation rules:

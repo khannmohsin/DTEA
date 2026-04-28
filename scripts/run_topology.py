@@ -79,6 +79,15 @@ def format_command(cmd: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in cmd)
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def normalize_address_text(value: str) -> str:
+    text = ANSI_ESCAPE_RE.sub("", str(value or "")).strip()
+    match = re.search(r"0x[a-fA-F0-9]{40}", text)
+    return match.group(0) if match else text
+
+
 def port_conflict_reported(log_text: str) -> bool:
     text = (log_text or "").lower()
     return "port(s)" in text and "already in use" in text
@@ -386,6 +395,14 @@ def peer_count(url: str) -> int:
         return 0
 
 
+def block_number(url: str) -> int | None:
+    try:
+        result = json_rpc(url, "eth_blockNumber", [])
+        return int(str(result), 16)
+    except Exception:
+        return None
+
+
 def node_enode(url: str) -> str | None:
     try:
         info = json_rpc(url, "admin_nodeInfo", [])
@@ -439,6 +456,44 @@ def health_ready(url: str) -> bool:
         return False
 
 
+def parse_validator_addresses(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        cleaned = raw.replace("[", "").replace("]", "").replace('"', "").replace("'", "")
+        return [part.strip().lower() for part in cleaned.split(",") if part.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(part).strip().lower() for part in raw if str(part).strip()]
+    return []
+
+
+def validator_in_set(api_url: str, address: str) -> bool:
+    try:
+        response = requests.get(api_url.rstrip("/") + "/validators", timeout=5)
+        if not response.ok:
+            return False
+        payload = response.json()
+        validators = parse_validator_addresses(payload.get("validators"))
+        return address.strip().lower() in validators
+    except Exception:
+        return False
+
+
+def wait_for_chain_progress(rpc_url: str, *, label: str, timeout: float = 45.0, interval: float = 2.0) -> bool:
+    start_block = block_number(rpc_url)
+    if start_block is None:
+        return False
+
+    target_block = start_block + 2
+
+    def progressed() -> bool:
+        current = block_number(rpc_url)
+        return current is not None and current >= target_block
+
+    if wait_for(progressed, timeout=timeout, interval=interval):
+        print(f"[topology] {label} chain progressed from block {start_block} to at least {target_block}", flush=True)
+        return True
+    return False
+
+
 def control_page_ready(url: str) -> bool:
     try:
         response = requests.get(url.rstrip("/") + "/status", timeout=5)
@@ -488,13 +543,13 @@ def derive_address(private_key_path: Path) -> str:
         check=False,
     )
     if completed.returncode == 0 and completed.stdout.strip():
-        return completed.stdout.strip().splitlines()[-1]
+        return normalize_address_text(completed.stdout.strip().splitlines()[-1])
 
     private_key_hex = private_key_path.read_text().strip()
     if private_key_hex.startswith("0x"):
         private_key_hex = private_key_hex[2:]
     private_key = keys.PrivateKey(bytes.fromhex(private_key_hex))
-    return "0x" + private_key.public_key.to_canonical_address().hex()
+    return normalize_address_text("0x" + private_key.public_key.to_canonical_address().hex())
 
 
 def build_registration_payload(
@@ -515,7 +570,7 @@ def build_registration_payload(
         "node_name": node_name,
         "node_type": node_type,
         "public_key": public_key,
-        "address": derive_address(private_key_path),
+        "address": normalize_address_text(derive_address(private_key_path)),
         "rpcURL": rpc_url,
         "signature": build_identity_signature(node_id, node_name, node_type, public_key, private_key_path),
         "wants_validator": bool(wants_validator),
@@ -549,13 +604,20 @@ def ensure_root_node_details(root_dir: Path, *, rpc_url: str, node_url: str | No
     )
 
 
-def render_client_env(api_port: int, rpc_port: int, p2p_port: int, host: str = LOCAL_HOST) -> str:
+def render_client_env(
+    api_port: int,
+    rpc_port: int,
+    p2p_port: int,
+    host: str = LOCAL_HOST,
+    parent_url: str | None = None,
+) -> str:
     return (
         f"FLASK_PORT={api_port}\n"
         f"BESU_PORT={rpc_port}\n"
         f"P2P_PORT={p2p_port}\n"
         f"NODE_URL=http://{host}:{api_port}\n"
         f"BESU_RPC_URL=http://{host}:{rpc_port}\n"
+        + (f"PARENT_URL={parent_url}\n" if parent_url else "")
     )
 
 
@@ -575,8 +637,15 @@ def render_endpoint_env(
     return payload
 
 
-def write_client_env(node_dir: Path, api_port: int, rpc_port: int, p2p_port: int, host: str = LOCAL_HOST) -> None:
-    (node_dir / ".env").write_text(render_client_env(api_port, rpc_port, p2p_port, host))
+def write_client_env(
+    node_dir: Path,
+    api_port: int,
+    rpc_port: int,
+    p2p_port: int,
+    host: str = LOCAL_HOST,
+    parent_url: str | None = None,
+) -> None:
+    (node_dir / ".env").write_text(render_client_env(api_port, rpc_port, p2p_port, host, parent_url=parent_url))
 
 
 def write_endpoint_env(
@@ -601,14 +670,14 @@ def build_node_env(
     env["FLASK_PORT"] = str(spec.api_port)
     env["NODE_URL"] = f"http://{host}:{spec.api_port}"
     env["NODE_ROLE"] = spec.tier  # fog / edge / endpoint / cloud
+    if parent_api_url:
+        env["PARENT_URL"] = local_url_for_container(parent_api_url) if spec.runtime_backend == "container" else parent_api_url
     if spec.tier in {"fog", "edge"}:
         env["BESU_PORT"] = str(spec.rpc_port)
         env["P2P_PORT"] = str(spec.p2p_port)
         env["BESU_RPC_URL"] = f"http://{host}:{spec.rpc_port}"
     else:
         env["BESU_RPC_URL"] = root_rpc_url
-        if parent_api_url:
-            env["PARENT_URL"] = local_url_for_container(parent_api_url) if spec.runtime_backend == "container" else parent_api_url
     return env
 
 
@@ -712,15 +781,137 @@ def launch_background(cmd: list[str], *, cwd: Path, log_path: Path, env: dict[st
     )
 
 
-def post_registration(root_api_url: str, payload: dict[str, Any], timeout_seconds: float = 180.0) -> dict[str, Any]:
+def post_registration(api_url: str, payload: dict[str, Any], timeout_seconds: float = 180.0) -> dict[str, Any]:
     response = requests.post(
-        root_api_url.rstrip("/") + "/register-node",
+        api_url.rstrip("/") + "/register-node",
         json=payload,
         timeout=timeout_seconds,
     )
     if response.status_code not in {200, 409}:
         raise RuntimeError(f"registration failed ({response.status_code}): {response.text}")
-    return response.json()
+    result = response.json()
+    if isinstance(result, dict):
+        result["_http_status"] = response.status_code
+    return result
+
+
+def registration_target_ready(url: str) -> bool:
+    """Return True when target API is healthy and has contract deployed."""
+    try:
+        response = requests.get(url.rstrip("/") + "/health", timeout=5)
+        if not response.ok:
+            return False
+        payload = response.json()
+        checks = payload.get("checks") or {}
+        deployed = payload.get("deployed")
+        contract_check = checks.get("contract_deployed")
+        return bool(deployed) or bool(contract_check)
+    except Exception:
+        return False
+
+
+def registration_visible(api_url: str, signature: str) -> bool:
+    try:
+        response = requests.get(api_url.rstrip("/") + f"/node/{signature}", timeout=5)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def verified_registration(
+    reg_url: str,
+    payload: dict[str, Any],
+    tier: str,
+    ordinal: int,
+    parent_rpc_url: str | None = None,
+    timeout_seconds: float = 180.0,
+) -> dict[str, Any]:
+    """Register a node against its designated parent with readiness retries."""
+
+    attempts = 20
+    retry_delay_seconds = 5.0
+    last_exc: RuntimeError | None = None
+    last_result: dict[str, Any] | None = None
+    warmup_checked = False
+
+    for attempt in range(1, attempts + 1):
+        if parent_rpc_url and not warmup_checked:
+            if not wait_for_chain_progress(parent_rpc_url, label=f"{tier}{ordinal} parent", timeout=45, interval=2):
+                print(
+                    f"[topology] parent chain for {tier}{ordinal} did not advance before registration; continuing",
+                    flush=True,
+                )
+            warmup_checked = True
+        if not registration_target_ready(reg_url):
+            if attempt == 1:
+                print(
+                    f"[topology] waiting for parent registration target before {tier}{ordinal} registration",
+                    flush=True,
+                )
+            time.sleep(retry_delay_seconds)
+            continue
+        try:
+            result = post_registration(reg_url, payload, timeout_seconds)
+            last_result = result
+            if result.get("status") and result.get("tx"):
+                return result
+            if (
+                int(result.get("_http_status", 200) or 200) == 409
+                and str(result.get("error") or "").strip().lower() == "already registered"
+                and registration_visible(reg_url, str(payload.get("signature") or ""))
+            ):
+                return {
+                    "ok": True,
+                    "status": "already_registered",
+                    "tx": None,
+                    "_http_status": 409,
+                }
+            # Parent reached but did not produce TX yet: retry same parent.
+            time.sleep(retry_delay_seconds)
+            continue
+        except RuntimeError as exc:
+            last_exc = exc
+            msg = str(exc)
+            if (
+                ("TimeExhausted" in msg or "not in the chain after 60 seconds" in msg or "not in the chain after 120 seconds" in msg)
+                and registration_visible(reg_url, str(payload.get("signature") or ""))
+            ):
+                return {
+                    "ok": True,
+                    "status": "already_registered",
+                    "tx": None,
+                }
+            # DuplicateNodeId revert means the first TX landed but timed out before
+            # the receipt was returned — the node is already on-chain. Treat as success.
+            if "DuplicateNodeId" in msg or "70477a48" in msg:
+                if registration_visible(reg_url, str(payload.get("signature") or "")):
+                    return {
+                        "ok": True,
+                        "status": "already_registered",
+                        "tx": None,
+                    }
+            # Parent API can be up while chain inclusion is still stabilizing.
+            # Treat these startup-time failures as transient and retry parent.
+            if (
+                "contract_not_deployed" in msg
+                or "not in the chain after 60 seconds" in msg
+                or "not in the chain after 120 seconds" in msg
+                or "TimeExhausted" in msg
+            ):
+                print(
+                    f"[topology] {tier}{ordinal}: transient registration failure on parent "
+                    f"(attempt {attempt}/{attempts}); retrying",
+                    flush=True,
+                )
+                time.sleep(retry_delay_seconds)
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+    if last_result is not None:
+        return last_result
+    raise RuntimeError(f"registration failed for {tier}{ordinal}: parent registration target not ready")
 
 
 def resolve_registration_url(
@@ -728,8 +919,9 @@ def resolve_registration_url(
     ordinal: int,
     manifest: dict[str, Any],
     root_api_url: str,
-) -> tuple[str, str]:
-    """Return (api_url, label) for where this node should register.
+    root_rpc_url: str,
+) -> tuple[str, str, str | None]:
+    """Return (api_url, label, rpc_url) for where this node should register.
 
     Hierarchy:
       fog      → cloud root
@@ -739,27 +931,27 @@ def resolve_registration_url(
     """
     nodes = manifest.get("nodes") or []
     if tier == "fog":
-        return root_api_url, "root cloud"
+        return root_api_url, "root cloud", root_rpc_url
 
     if tier == "edge":
         fog_nodes = [n for n in nodes if n.get("tier") == "fog"]
         if fog_nodes:
             parent = fog_nodes[(ordinal - 1) % len(fog_nodes)]
-            return parent["api_url"], parent["name"]
-        return root_api_url, "root cloud (no fog available)"
+            return parent["api_url"], parent["name"], parent.get("rpc_url")
+        return root_api_url, "root cloud (no fog available)", root_rpc_url
 
     if tier == "endpoint":
         edge_nodes = [n for n in nodes if n.get("tier") == "edge"]
         if edge_nodes:
             parent = edge_nodes[(ordinal - 1) % len(edge_nodes)]
-            return parent["api_url"], parent["name"]
+            return parent["api_url"], parent["name"], parent.get("rpc_url")
         fog_nodes = [n for n in nodes if n.get("tier") == "fog"]
         if fog_nodes:
             parent = fog_nodes[(ordinal - 1) % len(fog_nodes)]
-            return parent["api_url"], parent["name"]
-        return root_api_url, "root cloud (no edge/fog available)"
+            return parent["api_url"], parent["name"], parent.get("rpc_url")
+        return root_api_url, "root cloud (no edge/fog available)", root_rpc_url
 
-    return root_api_url, "root cloud"
+    return root_api_url, "root cloud", root_rpc_url
 
 
 def root_contract_is_deployed(root_dir: Path, env: dict[str, str]) -> bool:
@@ -826,8 +1018,14 @@ def _deploy_contract_web3(root_dir: Path, root_rpc_url: str, env: dict[str, str]
     abi = artifact["abi"]
     bytecode = artifact["bytecode"]
 
-    prefunded = json.loads((root_dir / "prefunded_keys.json").read_text())
-    private_key_hex = prefunded["prefunded_accounts"][0]["private_key"]
+    # Use the root node's own generated key (data/key.priv) to deploy so that
+    # policyAdmin = root's own address, which is never shared with other nodes.
+    # Prefunded keys are shared during bootstrap; using one of them as policyAdmin
+    # would allow any Fog/Edge node to call admin-only contract functions.
+    node_key_file = root_dir / "data" / "key.priv"
+    if not node_key_file.exists():
+        raise FileNotFoundError(f"Root node private key not found: {node_key_file}")
+    private_key_hex = node_key_file.read_text().strip()
     if not private_key_hex.startswith("0x"):
         private_key_hex = "0x" + private_key_hex
 
@@ -897,6 +1095,101 @@ def ensure_root_contract_deployed(root_dir: Path, root_rpc_url: str, env: dict[s
         raise RuntimeError("NodeRegistry deployment completed but check_if_deployed is still false")
 
 
+def seed_root_policies(root_dir: Path, root_rpc_url: str, env: dict[str, str]) -> None:
+    from eth_account import Account
+    from web3 import Web3
+
+    artifact_path = root_dir / "data" / "NodeRegistry.json"
+    if not artifact_path.exists():
+        raise FileNotFoundError(f"NodeRegistry artifact not found: {artifact_path}")
+
+    key_path = root_dir / "data" / "key.priv"
+    if not key_path.exists():
+        raise FileNotFoundError(f"Root node private key not found: {key_path}")
+
+    artifact = json.loads(artifact_path.read_text())
+    abi = artifact.get("abi") or []
+    networks = artifact.get("networks") or {}
+    network_id = next(iter(networks.keys()), None)
+    contract_address = networks.get(network_id, {}).get("address") if network_id else None
+    if not abi or not contract_address:
+        raise RuntimeError("NodeRegistry artifact is missing ABI or deployed address")
+
+    private_key_hex = key_path.read_text().strip()
+    if not private_key_hex.startswith("0x"):
+        private_key_hex = "0x" + private_key_hex
+
+    w3 = Web3(Web3.HTTPProvider(root_rpc_url, request_kwargs={"timeout": 60}))
+    if not w3.is_connected():
+        raise RuntimeError(f"Cannot connect to Besu RPC at {root_rpc_url}")
+
+    contract = w3.eth.contract(address=Web3.to_checksum_address(contract_address), abi=abi)
+    acct = Account.from_key(private_key_hex)
+    chain_id = w3.eth.chain_id
+    ctx_zero = "0x" + ("0" * 64)
+    wanted_pairs = [
+        ("Cloud", "Fog"),
+        ("Cloud", "Edge"),
+        ("Cloud", "Sensor"),
+        ("Fog", "Edge"),
+        ("Fog", "Sensor"),
+        ("Edge", "Sensor"),
+    ]
+    role_num = {"Cloud": 1, "Fog": 2, "Edge": 3, "Sensor": 4, "Actuator": 5}
+
+    try:
+        latest_id = int(contract.functions.nextPolicyId().call() or 0)
+    except Exception as exc:
+        raise RuntimeError(f"failed to read nextPolicyId during policy seeding: {exc}") from exc
+
+    existing_pairs: set[tuple[str, str]] = set()
+    for pid in range(1, max(0, latest_id) + 1):
+        try:
+            policy = contract.functions.getPolicy(pid).call()
+        except Exception:
+            continue
+        if not policy:
+            continue
+        from_role = int(policy[0])
+        to_role = int(policy[1])
+        ops_allowed = int(policy[2])
+        is_deprecated = bool(policy[3])
+        raw_ctx = policy[4]
+        if isinstance(raw_ctx, (bytes, bytearray)):
+            ctx_schema = "0x" + bytes(raw_ctx).hex()
+        else:
+            ctx_schema = str(raw_ctx).lower()
+        if is_deprecated or ops_allowed != 1 or ctx_schema != ctx_zero:
+            continue
+        from_name = next((name for name, number in role_num.items() if number == from_role), None)
+        to_name = next((name for name, number in role_num.items() if number == to_role), None)
+        if from_name and to_name:
+            existing_pairs.add((from_name, to_name))
+
+    nonce = w3.eth.get_transaction_count(acct.address, "pending")
+    for from_role, to_role in wanted_pairs:
+        if (from_role, to_role) in existing_pairs:
+            print(f"[topology] policy seed already present for {from_role}->{to_role}", flush=True)
+            continue
+
+        print(f"[topology] seeding policy {from_role}->{to_role} (READ, empty ctx)", flush=True)
+        tx = contract.functions.createPolicy(role_num[from_role], role_num[to_role], 1, bytes(32)).build_transaction({
+            "from": acct.address,
+            "nonce": nonce,
+            "gas": 3_000_000,
+            "gasPrice": 0,
+            "chainId": chain_id,
+        })
+        signed = acct.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        if int(receipt.status or 0) != 1:
+            raise RuntimeError(
+                f"policy seeding reverted for {from_role}->{to_role}: {tx_hash.hex()}"
+            )
+        nonce += 1
+
+
 def ensure_root_started(
     root_dir: Path,
     root_api_port: int,
@@ -917,6 +1210,7 @@ def ensure_root_started(
     current_p2p_port = root_p2p_port
     current_metrics_port = root_metrics_port
     root_env = dict(env)
+    root_env["IS_POLICY_ADMIN"] = "1"
 
     ensure_runtime_prereqs()
     for attempt in range(4):
@@ -961,6 +1255,8 @@ def ensure_root_started(
 
     print("[topology] ensuring root smart contract is deployed", flush=True)
     ensure_root_contract_deployed(root_dir, root_rpc_url, root_env)
+    print("[topology] seeding root policies", flush=True)
+    seed_root_policies(root_dir, root_rpc_url, root_env)
 
     if not health_ready(root_api_url):
         print(f"[topology] starting root api on port {root_api_port}", flush=True)
@@ -982,6 +1278,8 @@ def ensure_root_started(
         if not wait_for(lambda: health_ready(root_api_url), timeout=60, interval=1):
             raise RuntimeError("root API did not become ready")
     print("[topology] root api is ready", flush=True)
+    if not wait_for_chain_progress(root_rpc_url, label="root", timeout=45, interval=2):
+        print("[topology] root chain did not show additional block progress during warm-up; continuing", flush=True)
     node_details = ensure_root_node_details(root_dir, rpc_url=root_rpc_url, node_url=root_api_url)
 
     return {
@@ -1625,7 +1923,13 @@ def prepare_node(
     if spec.tier in {"fog", "edge"}:
         print(f"[topology] generating blockchain identity for {spec.tier}{spec.ordinal}", flush=True)
         copy_root_chain_material(root_dir, node_dir, root_enode)
-        write_client_env(node_dir, spec.api_port or 0, spec.rpc_port or 0, spec.p2p_port or 0)
+        write_client_env(
+            node_dir,
+            spec.api_port or 0,
+            spec.rpc_port or 0,
+            spec.p2p_port or 0,
+            parent_url=parent_api_url,
+        )
         patch_metrics_port(node_dir / "client_blockchain_init.py", spec.metrics_port or 0)
         payload = build_registration_payload(
             node_dir=node_dir,
@@ -1775,19 +2079,26 @@ def append_node_to_scenario(
 
     try:
         print(f"[topology] provisioning {spec.tier}{spec.ordinal}", flush=True)
-        reg_url, reg_label = resolve_registration_url(spec.tier, spec.ordinal, manifest, root_api_url)
+        reg_url, reg_label, parent_rpc_url = resolve_registration_url(
+            spec.tier,
+            spec.ordinal,
+            manifest,
+            root_api_url,
+            root_rpc_url,
+        )
         root_enode = json_rpc(root_rpc_url, "admin_nodeInfo", [])["enode"]
         node_dir, payload = prepare_node(
             spec,
             root_dir,
             root_enode,
             root_rpc_url=root_rpc_url,
-            parent_api_url=reg_url if spec.tier == "endpoint" else None,
+            parent_api_url=reg_url,
         )
         node_record = {
             **asdict(spec),
             "directory": str(node_dir),
             "payload": payload,
+            "parent_api_url": reg_url,
             "control_url": f"http://{LOCAL_HOST}:{spec.control_port}" if spec.control_port else None,
             "api_url": f"http://{LOCAL_HOST}:{spec.api_port}" if spec.api_port else None,
             "rpc_url": f"http://{LOCAL_HOST}:{spec.rpc_port}" if spec.rpc_port else None,
@@ -1805,7 +2116,7 @@ def append_node_to_scenario(
             spec=spec,
             root_rpc_url=root_rpc_url_for_container(root_rpc_url) if spec.runtime_backend == "container" else root_rpc_url,
             host=LOCAL_HOST,
-            parent_api_url=reg_url if spec.tier == "endpoint" else None,
+            parent_api_url=reg_url,
         )
         logs_dir = scenario_dir / "logs"
         if spec.tier in {"fog", "edge"}:
@@ -1823,11 +2134,34 @@ def append_node_to_scenario(
             node_record["chain_pid"] = chain_pid
             started_pids.extend(pid for pid in (control_pid, api_pid, chain_pid) if pid)
 
-        print(f"[topology] registering {spec.tier}{spec.ordinal} with the root cloud", flush=True)
         print(f"[topology] registering {spec.tier}{spec.ordinal} with {reg_label}", flush=True)
-        node_record["registration"] = post_registration(reg_url, payload)
+        registration_started = time.perf_counter()
+        node_record["registration"] = verified_registration(
+            reg_url,
+            payload,
+            spec.tier,
+            spec.ordinal,
+            parent_rpc_url=parent_rpc_url,
+        )
+        node_record["registration"]["registration_latency_ms"] = round(
+            (time.perf_counter() - registration_started) * 1000,
+            3,
+        )
         reg_status = (node_record["registration"] or {}).get("status")
         print(f"[topology] registration result for {spec.tier}{spec.ordinal}: {reg_status}", flush=True)
+        if spec.wants_validator:
+            promotion_started = time.perf_counter()
+            if wait_for(
+                lambda: validator_in_set(root_api_url, str((payload or {}).get("address") or "")),
+                timeout=90,
+                interval=2,
+            ):
+                node_record["registration"]["validator_promotion_latency_ms"] = round(
+                    (time.perf_counter() - promotion_started) * 1000,
+                    3,
+                )
+            else:
+                node_record["registration"]["validator_promotion_latency_ms"] = None
         if spec.tier == "endpoint":
             control_pid, api_pid = start_service_only(
                 node_dir=node_dir,
@@ -2110,18 +2444,25 @@ def batch_main(argv: list[str] | None = None) -> None:
 
         for spec in specs:
             print(f"[topology] provisioning {spec.tier}{spec.ordinal}", flush=True)
-            reg_url, reg_label = resolve_registration_url(spec.tier, spec.ordinal, manifest, root_info["api_url"])
+            reg_url, reg_label, parent_rpc_url = resolve_registration_url(
+                spec.tier,
+                spec.ordinal,
+                manifest,
+                root_info["api_url"],
+                root_info["rpc_url"],
+            )
             node_dir, payload = prepare_node(
                 spec,
                 root_dir,
                 root_enode,
                 root_rpc_url=root_info["rpc_url"],
-                parent_api_url=reg_url if spec.tier == "endpoint" else None,
+                parent_api_url=reg_url,
             )
             node_record = {
                 **asdict(spec),
                 "directory": str(node_dir),
                 "payload": payload,
+                "parent_api_url": reg_url,
                 "control_url": f"http://{LOCAL_HOST}:{spec.control_port}" if spec.control_port else None,
                 "api_url": f"http://{LOCAL_HOST}:{spec.api_port}" if spec.api_port else None,
                 "rpc_url": f"http://{LOCAL_HOST}:{spec.rpc_port}" if spec.rpc_port else None,
@@ -2136,7 +2477,7 @@ def batch_main(argv: list[str] | None = None) -> None:
                 spec=spec,
                 root_rpc_url=root_rpc_url_for_container(root_info["rpc_url"]) if spec.runtime_backend == "container" else root_info["rpc_url"],
                 host=LOCAL_HOST,
-                parent_api_url=reg_url if spec.tier == "endpoint" else None,
+                parent_api_url=reg_url,
             )
 
             if spec.tier in {"fog", "edge"}:
@@ -2154,11 +2495,34 @@ def batch_main(argv: list[str] | None = None) -> None:
                 node_record["chain_pid"] = chain_pid
                 started_pids.extend(pid for pid in (control_pid, api_pid, chain_pid) if pid)
 
-            print(f"[topology] registering {spec.tier}{spec.ordinal} with the root cloud", flush=True)
             print(f"[topology] registering {spec.tier}{spec.ordinal} with {reg_label}", flush=True)
-            node_record["registration"] = post_registration(reg_url, payload)
+            registration_started = time.perf_counter()
+            node_record["registration"] = verified_registration(
+                reg_url,
+                payload,
+                spec.tier,
+                spec.ordinal,
+                parent_rpc_url=parent_rpc_url,
+            )
+            node_record["registration"]["registration_latency_ms"] = round(
+                (time.perf_counter() - registration_started) * 1000,
+                3,
+            )
             reg_status = (node_record["registration"] or {}).get("status")
             print(f"[topology] registration result for {spec.tier}{spec.ordinal}: {reg_status}", flush=True)
+            if spec.wants_validator:
+                promotion_started = time.perf_counter()
+                if wait_for(
+                    lambda: validator_in_set(root_info["api_url"], str((payload or {}).get("address") or "")),
+                    timeout=90,
+                    interval=2,
+                ):
+                    node_record["registration"]["validator_promotion_latency_ms"] = round(
+                        (time.perf_counter() - promotion_started) * 1000,
+                        3,
+                    )
+                else:
+                    node_record["registration"]["validator_promotion_latency_ms"] = None
             if spec.tier == "endpoint":
                 control_pid, api_pid = start_service_only(node_dir=node_dir, spec=spec, env=node_env, logs_dir=logs_dir, scenario_name=scenario_name)
                 node_record["control_pid"] = control_pid

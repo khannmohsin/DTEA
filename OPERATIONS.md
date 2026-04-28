@@ -5,27 +5,92 @@
 Build and start the stack:
 
 ```bash
-docker compose up --build cloud
+docker compose up --build cloud 
+docker compose down -v
+docker compose restart cloud
 ```
 
-The cloud node exposes:
+```bash
+curl -s http://127.0.0.1:5600/health | jq
+curl -s http://127.0.0.1:5600/spec | jq
+```
+
+<!-- The cloud node exposes:
 
 - API: `http://<root-host>:5600`
 - Besu RPC: `http://<root-host>:8545`
 - P2P: `30303/tcp`
 
-Useful checks:
+Useful checks: -->
 
-```bash
+<!-- ```bash
 curl -s http://<root-host>:5600/health
 curl -s http://<root-host>:5600/spec
 curl -s http://<root-host>:5600/admin/nodes/list -H "Authorization: Bearer <ADMIN_TOKEN>"
+``` -->
+
+Policy bootstrap from file:
+
+```bash
+jq -c '.policies[]' policies.json | while read -r policy; do
+  echo
+  echo "=================================================="
+  echo "$policy" | jq -C '{from_role,to_role,ops,resource}'
+  response="$(curl -sS -X POST http://127.0.0.1:5600/admin/policy/create \
+    -H "Authorization: Bearer changeme" \
+    -H "Content-Type: application/json" \
+    -d "$policy")"
+  echo "$response" | jq -C '
+    if .ok and .result.status == "created" then
+      {
+        status: "CREATED",
+        policy_id: .result.policyId,
+        note: .result.note
+      }
+    elif .ok and .result.status == "exists" then
+      {
+        status: "EXISTS",
+        policy_id: .result.policyId,
+        note: .result.note
+      }
+    else
+      {
+        status: (.error // .result.status // "ERROR"),
+        detail: (.detail // .result.note // "unknown")
+      }
+    end
+  '
+done
+
 ```
 
-Policy bootstrap:
+Policy Check:
+
+```bash
+curl -sS http://127.0.0.1:5600/admin/policy/list \
+  -H "Authorization: Bearer changeme" | jq
+```
+
 
 - set `POLICY_FILE=/path/to/policies.json`
 - on startup the root node will attempt to `ensure_policy` for each entry after the contract is ready
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Fog / Edge Nodes
 

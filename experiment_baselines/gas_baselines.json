@@ -1,53 +1,32 @@
 {
   "metadata": {
-    "version": 1,
+    "version": 2,
     "updated_at": "2026-04-13",
     "notes": [
-      "This file is intentionally limited to strict comparable blockchain access-control systems.",
-      "Only operation-level EVM gas values should be entered here for register/issue/revoke/delegate/check.",
-      "If a paper does not report operation-level EVM gas for those actions, keep gas_cost as null.",
-      "Some additional related-work entries are included for traceability, but remain null until operation-level EVM gas is reported."
+      "Operation-level EVM gas values from published blockchain access-control systems.",
+      "Values for ACS-IoT and IoTChain are approximate readings from bar charts (Fig 7 in each paper).",
+      "null indicates the system does not expose that operation or does not report gas for it."
     ]
   },
   "systems": {
-    "BlendCAC": {
-      "source": "Related Work (project-specific references)",
-      "metrics": {
-        "register": {"gas_cost": null},
-        "issue": {"gas_cost": null},
-        "revoke": {"gas_cost": null},
-        "delegate": {"gas_cost": null},
-        "check": {"gas_cost": null}
-      }
-    },
     "ACS-IoT": {
-      "source": "Related Work (project-specific references)",
+      "source": "Rashid et al., Wireless Personal Communications (2024), Fig 7 — Ropsten testnet",
       "metrics": {
-        "register": {"gas_cost": null},
-        "issue": {"gas_cost": null},
-        "revoke": {"gas_cost": null},
-        "delegate": {"gas_cost": null},
-        "check": {"gas_cost": null}
+        "register": {"gas_cost": 45000, "note": "TX1 Resource_Registration (~45k from Fig 7)"},
+        "issue":    {"gas_cost": 160000, "note": "TX3 Policy_Creation (~160k from Fig 7, highest TX)"},
+        "revoke":   {"gas_cost": 30000, "note": "TX6 Revoke_Policy (~30k from Fig 7)"},
+        "delegate": {"gas_cost": null, "note": "No delegation operation in ACS-IoT"},
+        "check":    {"gas_cost": 0, "note": "VW operations are free read-only calls (Fig 7)"}
       }
     },
-    "PriSec": {
-      "source": "Related Work/ssrn-5363395.pdf (reference to Sensors 2019 PriSec)",
+    "IoTChain": {
+      "source": "Putra et al., IEEE IoT Journal (2021), Fig 7 — Rinkeby testnet",
       "metrics": {
-        "register": {"gas_cost": null},
-        "issue": {"gas_cost": null},
-        "revoke": {"gas_cost": null},
-        "delegate": {"gas_cost": null},
-        "check": {"gas_cost": null}
-      }
-    },
-    "StrongBox": {
-      "source": "Related Work/ssrn-5363395.pdf (reference to ASPLOS 2018 StrongBox)",
-      "metrics": {
-        "register": {"gas_cost": null},
-        "issue": {"gas_cost": null},
-        "revoke": {"gas_cost": null},
-        "delegate": {"gas_cost": null},
-        "check": {"gas_cost": null}
+        "register": {"gas_cost": 90000, "note": "TXreg attribute registration (~90k from Fig 7)"},
+        "issue":    {"gas_cost": 75000, "note": "TXR authorization/token issuance (~75k from Fig 7)"},
+        "revoke":   {"gas_cost": null, "note": "No explicit revoke transaction in IoTChain"},
+        "delegate": {"gas_cost": null, "note": "No delegation operation in IoTChain"},
+        "check":    {"gas_cost": 0, "note": "Read-only verification, no gas consumed"}
       }
     }
   }

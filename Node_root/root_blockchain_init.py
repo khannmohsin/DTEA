@@ -45,6 +45,21 @@ class BlockchainInit:
 
         prefunded_accounts = [self.generate_account() for _ in range(num_prefunded_accounts)]
 
+        # Fund the root's own node key address so it can deploy the contract and
+        # become policyAdmin without relying on a shared prefunded key.
+        alloc = {acct["address"]: {"balance": "90000000000000000000000"} for acct in prefunded_accounts}
+        if os.path.exists(self.private_key):
+            try:
+                from eth_keys import keys as _eth_keys
+                raw_hex = open(self.private_key).read().strip()
+                raw_hex = raw_hex[2:] if raw_hex.startswith("0x") else raw_hex
+                priv = _eth_keys.PrivateKey(bytes.fromhex(raw_hex))
+                root_address = Account.from_key(priv.to_hex()).address
+                alloc[root_address] = {"balance": "90000000000000000000000"}
+                print(f"\n Root node address {root_address} funded in genesis alloc\n")
+            except Exception as e:
+                print(f"\n Warning: could not fund root key address in genesis: {e}\n")
+
         qbft_config = {
             "genesis": {
                 "config": {
@@ -62,7 +77,7 @@ class BlockchainInit:
                 "gasLimit": GAS_LIMIT,
                 "difficulty": DIFFICULTY,
                 "coinbase": "0x0000000000000000000000000000000000000000",
-                "alloc": {acct["address"]: {"balance": "90000000000000000000000"} for acct in prefunded_accounts}
+                "alloc": alloc
             },
             "blockchain": {
                 "nodes": {

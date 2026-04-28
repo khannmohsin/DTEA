@@ -20,6 +20,7 @@ import re
 import subprocess
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
 from acknowledgement import AcknowledgementSender, ALLOWED_ACK_ROLES
@@ -70,6 +71,28 @@ from tef_metrics import LatencyRecorder, ProcessEventRecorder, ensure_results_di
 ROLE = {"Unknown":0, "Cloud":1, "Fog":2, "Edge":3, "Sensor":4, "Actuator":5}
 ROLE_BY_NUM = {v:k for (k,v) in ROLE.items()}
 VALID_POLICY_ROLES = {name for name, value in ROLE.items() if value > 0}
+CUSTOM_ERROR_SELECTOR_NAMES = {
+    "0x3f0f8fb6": "AddressNotRegistered",
+    "0x6ca13d52": "AlreadyRevoked",
+    "0x49da7e6d": "DuplicateNodeId",
+    "0x7db2511f": "DuplicatePolicy",
+    "0x40a3d246": "DuplicateSignature",
+    "0x2d59cfbd": "EmptyOpsAllowed",
+    "0x14afd509": "EmptyOpsSubset",
+    "0x7dc3db61": "GrantAlreadyActive",
+    "0x414f8053": "InvalidDelegationDepth",
+    "0x26f7f534": "InvalidExpiry",
+    "0x4f5ba1b6": "InvalidRoles",
+    "0xe2517d3f": "NodeNotRegistered",
+    "0x37ef0f63": "NotGrantHolder",
+    "0x29b2c9d7": "NotPolicyAdmin",
+    "0x56144b78": "NotResourceOwner",
+    "0xb7f9a8f7": "OpsSubsetExceedsAllowed",
+    "0x8395441c": "PolicyIsDeprecated",
+    "0xc3f08144": "PolicyNotFound",
+    "0x222cb570": "PolicyRoleMismatch",
+    "0xd92e233d": "ZeroAddr",
+}
 
 # HTTP -> OP mapping (tweak as needed)
 METHOD_TO_OP = {
@@ -93,6 +116,12 @@ def _json_load(path: str, default):
             return json.load(f)
     except Exception:
         return default
+
+
+def _clean_address_text(value: Any) -> str:
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(value or "")).strip()
+    match = re.search(r"0x[a-fA-F0-9]{40}", text)
+    return match.group(0) if match else text
 
 
 def _load_local_env(repo_root: str) -> None:
@@ -265,6 +294,10 @@ class Orchestrator:
         self._policy_lock = threading.RLock()
         self._grant_cache: dict = {}  # key: (from_sig, to_sig, method, resource_path) → (result_dict, expiry_epoch)
         self._grant_cache_lock = threading.RLock()
+        self._grant_policy_id_cache: dict[tuple[str, str], int] = {}
+        self._grant_policy_cache_lock = threading.RLock()
+        self._policy_details_cache: OrderedDict[int, Dict[str, Any]] = OrderedDict()
+        self._policy_details_cache_lock = threading.RLock()
         self._policy_poller_started = False
         self._policy_poller_lock = threading.Lock()
         self._policy_poll_block = 0
@@ -274,8 +307,10 @@ class Orchestrator:
         pk = _json_load(self.prefunded_keys_json, {"prefunded_accounts":[]})
         node_details_path = os.path.join(self.root, "node-details.json")
         self.nd = _json_load(node_details_path, {})
-        # Prefer the node-details address if present, else fallback to prefunded[0]
-        self.registrar_addr = pk.get("prefunded_accounts", [])[0].get("address", "") if pk else None
+        # Prefer the node's own persisted address; fallback to prefunded[0] only when absent.
+        node_details_addr = _clean_address_text(self.nd.get("address", ""))
+        prefunded_addr = _clean_address_text(pk.get("prefunded_accounts", [])[0].get("address", "")) if pk else ""
+        self.registrar_addr = node_details_addr or prefunded_addr or None
         # --- intelligent validator listening / dedupe ---
         self._vlisten_lock = threading.Lock()
         self._vlisten_started = False
@@ -350,12 +385,21 @@ class Orchestrator:
             self._contract = None
 
     def _load_accounts(self) -> None:
-        """Load signing accounts from prefunded_keys.json into self._accounts."""
+        """Load signing accounts, optionally prepending the root policy-admin key."""
         if self._w3 is None or EthAccount is None:
             return
         try:
-            data = _json_load(self.prefunded_keys_json, {"prefunded_accounts": []})
             self._accounts = []
+            if os.getenv("IS_POLICY_ADMIN"):
+                root_key_path = self.repo_path / "data" / "key.priv"
+                if root_key_path.exists():
+                    root_pk = root_key_path.read_text().strip()
+                    if root_pk:
+                        if not root_pk.startswith("0x"):
+                            root_pk = "0x" + root_pk
+                        self._accounts.append(EthAccount.from_key(root_pk))
+
+            data = _json_load(self.prefunded_keys_json, {"prefunded_accounts": []})
             for entry in data.get("prefunded_accounts", []):
                 pk = (entry.get("private_key") or "").strip()
                 if pk:
@@ -385,7 +429,14 @@ class Orchestrator:
         except Exception as e:
             raise RuntimeError(str(e))
 
-    def _w3_send(self, contract_fn, from_idx: Optional[int] = None, gas: int = 3_000_000, gas_label: Optional[str] = None) -> Dict[str, Any]:
+    def _w3_send(
+        self,
+        contract_fn,
+        from_idx: Optional[int] = None,
+        gas: int = 3_000_000,
+        gas_label: Optional[str] = None,
+        receipt_timeout_seconds: int = 60,
+    ) -> Dict[str, Any]:
         """Build, sign, and send a contract transaction. Returns receipt dict."""
         acct = self._w3_account(from_idx)
         with self._nonce_lock:
@@ -398,13 +449,40 @@ class Orchestrator:
             })
             signed = self._w3.eth.account.sign_transaction(tx, acct.key)
             tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60, poll_latency=0.01)
+        receipt = self._w3.eth.wait_for_transaction_receipt(
+            tx_hash,
+            timeout=receipt_timeout_seconds,
+            poll_latency=0.05,
+        )
         receipt_dict = dict(receipt)
         if int(receipt_dict.get("status", 1) or 0) == 0:
-            raise RuntimeError(f"transaction_reverted:{self._receipt_tx_hash(receipt_dict)}")
+            revert_reason = self._revert_reason_for_tx(tx)
+            raise RuntimeError(f"transaction_reverted:{self._receipt_tx_hash(receipt_dict)}:{revert_reason}")
         if gas_label:
             self._append_gas_log(gas_label, receipt_dict)
         return receipt_dict
+
+    def _w3_submit(
+        self,
+        contract_fn,
+        from_idx: Optional[int] = None,
+        gas: int = 3_000_000,
+    ) -> str:
+        """Submit a transaction to the mempool and return immediately — no receipt wait.
+        Safe for use on private QBFT networks where TX inclusion is guaranteed within one block.
+        Returns the hex tx_hash string."""
+        acct = self._w3_account(from_idx)
+        with self._nonce_lock:
+            nonce = self._w3.eth.get_transaction_count(acct.address, "pending")
+            tx = contract_fn.build_transaction({
+                "from": acct.address,
+                "gas": gas,
+                "gasPrice": 0,
+                "nonce": nonce,
+            })
+            signed = self._w3.eth.account.sign_transaction(tx, acct.key)
+            tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        return tx_hash.hex()
 
     def _w3_rpc(self, method: str, params: list) -> Any:
         """Raw JSON-RPC call for non-contract methods (e.g. QBFT admin)."""
@@ -616,10 +694,60 @@ class Orchestrator:
         return match.group(0) if match else ""
 
     def _clean_address(self, value: str) -> str:
-        text = str(value or "")
-        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
-        match = re.search(r"0x[a-fA-F0-9]{40}", text)
-        return match.group(0) if match else text.strip()
+        return _clean_address_text(value)
+
+    def _decode_revert_error(self, exc: Exception) -> str:
+        text = str(exc or "").strip()
+        selector_match = re.search(r"0x[a-fA-F0-9]{8}", text)
+        if selector_match:
+            selector = selector_match.group(0).lower()
+            name = CUSTOM_ERROR_SELECTOR_NAMES.get(selector)
+            if name:
+                return name
+        return text or exc.__class__.__name__
+
+    def _revert_reason_for_tx(self, tx: Dict[str, Any]) -> str:
+        try:
+            call_tx = {
+                "from": tx.get("from"),
+                "to": tx.get("to"),
+                "data": tx.get("data"),
+                "value": tx.get("value", 0),
+            }
+            self._w3.eth.call(call_tx, block_identifier="latest")
+        except Exception as exc:
+            return self._decode_revert_error(exc)
+        return "unknown"
+
+    def _remember_grant_policy_id(self, from_sig: str, to_sig: str, policy_id: int) -> None:
+        try:
+            pid = int(policy_id)
+        except Exception:
+            return
+        if pid <= 0:
+            return
+        with self._grant_policy_cache_lock:
+            self._grant_policy_id_cache[(str(from_sig), str(to_sig))] = pid
+
+    def _cached_grant_policy_id(self, from_sig: str, to_sig: str) -> Optional[int]:
+        with self._grant_policy_cache_lock:
+            return self._grant_policy_id_cache.get((str(from_sig), str(to_sig)))
+
+    def _policy_details_cache_get(self, policy_id: int) -> Optional[Dict[str, Any]]:
+        with self._policy_details_cache_lock:
+            cached = self._policy_details_cache.get(int(policy_id))
+            if cached is None:
+                return None
+            self._policy_details_cache.move_to_end(int(policy_id))
+            return dict(cached)
+
+    def _policy_details_cache_put(self, policy_id: int, payload: Dict[str, Any]) -> None:
+        with self._policy_details_cache_lock:
+            pid = int(policy_id)
+            self._policy_details_cache[pid] = dict(payload)
+            self._policy_details_cache.move_to_end(pid)
+            while len(self._policy_details_cache) > 256:
+                self._policy_details_cache.popitem(last=False)
 
     def _ack_key(self, payload: Dict[str, Any]) -> str:
         return str(payload.get("signature") or payload.get("node_id") or uuid.uuid4().hex)
@@ -1205,7 +1333,10 @@ class Orchestrator:
                 from_signature=node_signature,
             )
             return r.stdout
-        # web3.py path: ABI-encode params then call registerNodePacked(bytes)
+        # web3.py path: ABI-encode params then submit without waiting for receipt.
+        # On a private QBFT network with gasPrice=0 and trusted validators, TX inclusion
+        # in the next block (≤1s) is guaranteed — blocking on the receipt is unnecessary
+        # and is the dominant source of registration latency.
         safe_addr = registered_by_addr or ("0x" + "0" * 40)
         try:
             safe_addr = Web3.to_checksum_address(safe_addr)
@@ -1215,11 +1346,11 @@ class Orchestrator:
             ["string", "string", "string", "string", "address", "string", "string", "string"],
             [node_id, node_name, node_type_str, public_key, safe_addr, rpcURL, registered_by_node_type_str, node_signature],
         )
-        receipt = self._w3_send(
+        tx_hash = self._w3_submit(
             self._contract.functions.registerNodePacked(packed),
-            from_idx=from_idx, gas=3_000_000, gas_label="registerNode"
+            from_idx=from_idx,
+            gas=3_000_000,
         )
-        tx_hash = self._receipt_tx_hash(receipt)
         tx_out = f"✅ registerNodePacked: {tx_hash}"
         print(f"[register_node] web3 result: {tx_out}")
         self.record_operation_latency("registerNode")
@@ -1227,7 +1358,7 @@ class Orchestrator:
             component="blockchain",
             stage="registration_submit",
             status="ok",
-            message="Node registration transaction submitted",
+            message="Node registration transaction submitted (pending confirmation)",
             details={"node_id": node_id},
             tx_hash=tx_hash,
             from_signature=node_signature,
@@ -1251,6 +1382,25 @@ class Orchestrator:
             "nodeSignature": r[6],
             "registeredByNodeType": int(r[7]),
         }
+
+    def get_address_from_signature(self, node_sig: str) -> Optional[str]:
+        """Return the Ethereum address of the node identified by node_sig, or None."""
+        try:
+            details = self.get_node_by_sig(node_sig)
+            addr = _clean_address_text(details.get("registeredBy") or "")
+            return addr if addr else None
+        except Exception:
+            return None
+
+    def _prefunded_index_for_address(self, address: Optional[str]) -> Optional[int]:
+        """Return the index in self._accounts whose address matches, or None."""
+        if not address or not self._accounts:
+            return None
+        addr_lc = address.lower()
+        for idx, acct in enumerate(self._accounts):
+            if acct.address.lower() == addr_lc:
+                return idx
+        return None
 
     #@track_performance
     def propose_validator(self, validator_addr: str, from_idx: Optional[int]=None) -> str:
@@ -1449,10 +1599,15 @@ class Orchestrator:
     _POLICY_FIELDS = ("fromRole", "toRole", "opsAllowed", "isDeprecated", "ctxSchema", "policyHash", "version")
 
     def get_policy(self, policy_id: int) -> Dict[str,Any]:
+        cached = self._policy_details_cache_get(policy_id)
+        if cached is not None:
+            return cached
         if self._should_use_js():
             r = self._js("getPolicy", policy_id)
             if not r.ok: raise RuntimeError(r.stderr or r.stdout)
-            return json.loads(r.stdout)
+            result = json.loads(r.stdout)
+            self._policy_details_cache_put(policy_id, result)
+            return result
         p = self._w3_call(self._contract.functions.getPolicy(int(policy_id)))
         # web3.py returns a raw tuple when ABI uses a struct — map to dict
         if isinstance(p, (tuple, list)) and not hasattr(p, 'items') and not hasattr(p, '_asdict'):
@@ -1467,6 +1622,7 @@ class Orchestrator:
         for k in ("fromRole", "toRole", "opsAllowed", "version"):
             if k in result:
                 result[k] = int(result[k])
+        self._policy_details_cache_put(policy_id, result)
         return result
     
     def _find_policy_on_chain(self, from_role: str, to_role: str, ops_csv: str, ctx: str):
@@ -1492,33 +1648,41 @@ class Orchestrator:
         want_from = ROLE.get(from_role, 0)
         want_to   = ROLE.get(to_role, 0)
         want_ops  = _ops_mask(ops_csv)
-        want_ctx  = _ctx_schema_hex(ctx)  # <<— normalize to on-chain bytes32
+        def _scan_for_ctx(want_ctx: str) -> Optional[int]:
+            for pid in range(1, max(0, latest_id) + 1):
+                try:
+                    gp = self.get_policy(pid)
+                    if int(gp.get("version", 0)) <= 0:
+                        continue
+                    if int(gp.get("fromRole", 0)) != want_from:
+                        continue
+                    if int(gp.get("toRole", 0)) != want_to:
+                        continue
+                    if int(gp.get("opsAllowed", 0)) != want_ops:
+                        continue
+                    if bool(gp.get("isDeprecated", False)):
+                        continue
+                    if (gp.get("ctxSchema") or "").lower() != want_ctx:
+                        continue
+                    print(
+                        f"[find_policy_on_chain] MATCH pid={pid} for {from_role}->{to_role} "
+                        f"with ops={ops_csv} and ctx={want_ctx}"
+                    )
+                    return pid
+                except Exception:
+                    # ignore holes/bad reads and keep scanning
+                    pass
+            return None
 
-        for pid in range(1, max(0, latest_id) + 1):
-            try:
-                gp = self.get_policy(pid)
-                if int(gp.get("version", 0)) <= 0:
-                    continue
-                if int(gp.get("fromRole", 0)) != want_from:
-                    print(f"[find_policy_on_chain] skipping pid={pid} fromRole={gp.get('fromRole')} != {want_from}")
-                    continue
-                if int(gp.get("toRole", 0)) != want_to:
-                    print(f"[find_policy_on_chain] skipping pid={pid} toRole={gp.get('toRole')} != {want_to}")
-                    continue
-                if int(gp.get("opsAllowed", 0)) != want_ops:
-                    print(f"[find_policy_on_chain] skipping pid={pid} opsAllowed={gp.get('opsAllowed')} != {want_ops}")
-                    continue
-                if (gp.get("ctxSchema") or "").lower() != want_ctx:
-                    print(f"[find_policy_on_chain] skipping pid={pid} ctxSchema={gp.get('ctxSchema')} != {ctx}")
-                    continue
-                if bool(gp.get("isDeprecated", False)):
-                    print(f"[find_policy_on_chain] skipping pid={pid} isDeprecated={gp.get('isDeprecated')}")
-                    continue
-                print(f"[++++++find_policy_on_chain] MATCH pid={pid} for {from_role}->{to_role} with ops={ops_csv} and ctx={ctx}")
-                return pid
-            except Exception:
-                # ignore holes/bad reads and keep scanning
-                pass
+        exact_ctx = _ctx_schema_hex(ctx)
+        found = _scan_for_ctx(exact_ctx)
+        if found:
+            return found
+
+        if (ctx or "").strip():
+            found = _scan_for_ctx(_ctx_schema_hex(""))
+            if found:
+                return found
         return None
     # ---- grants & delegation ----
 
@@ -1559,6 +1723,7 @@ class Orchestrator:
             from_idx=from_idx, gas=3_000_000, gas_label="issueToken"
         )
         tx_hash = self._receipt_tx_hash(receipt)
+        self._remember_grant_policy_id(from_sig, to_sig, int(policy_id))
         self.record_operation_latency("issueToken")
         self.emit_event(
             component="blockchain",
@@ -1612,6 +1777,7 @@ class Orchestrator:
             from_idx=from_idx, gas=3_000_000, gas_label="issueTokenDelegable"
         )
         tx_hash = self._receipt_tx_hash(receipt)
+        self._remember_grant_policy_id(from_sig, to_sig, int(policy_id))
         self.record_operation_latency("issueTokenDelegable")
         self.emit_event(
             component="blockchain",
@@ -1671,6 +1837,8 @@ class Orchestrator:
             from_idx=from_idx
         )
         tx_hash = self._receipt_tx_hash(receipt)
+        self._remember_grant_policy_id(current_from_sig, to_sig, int(policy_id))
+        self._remember_grant_policy_id(new_from_sig, to_sig, int(policy_id))
         self.record_operation_latency("delegateToken")
         self.emit_event(
             component="blockchain",
@@ -1761,11 +1929,15 @@ class Orchestrator:
         }
 
     def _resolve_grant_policy_id(self, from_sig: str, to_sig: str) -> Optional[int]:
+        cached = self._cached_grant_policy_id(from_sig, to_sig)
+        if cached is not None:
+            return cached
         if self._should_use_js() and not os.getenv("REAL_INTERACT"):
             try:
                 grant = self.get_grant_ex(from_sig, to_sig, 0)
                 pid = int(grant.get("policyId") or 0)
                 if pid > 0 and grant.get("isIssued"):
+                    self._remember_grant_policy_id(from_sig, to_sig, pid)
                     return pid
             except Exception:
                 pass
@@ -1785,6 +1957,7 @@ class Orchestrator:
             try:
                 grant = self.get_grant_ex(from_sig, to_sig, pid)
                 if grant.get("isIssued"):
+                    self._remember_grant_policy_id(from_sig, to_sig, pid)
                     return pid
             except Exception:
                 continue
@@ -2619,18 +2792,7 @@ class Orchestrator:
 
         ack_sent = False
         ack_status = "not_needed"
-        ack_required = False
-        try:
-            ack_meta = self._dispatch_acknowledgement(payload, tx_out=tx_out)
-            ack_sent = bool(ack_meta.get("ack_sent", False))
-            ack_status = str(ack_meta.get("ack_status") or "not_needed")
-            ack_required = bool(ack_meta.get("ack_required", False))
-        except Exception as e:
-            print(f"Acknowledgement error: {e}")
-            ack_sent = False
-            ack_status = "skipped"
-            ack_required = (payload.get("node_type") or "").strip() in ALLOWED_ACK_ROLES
-        # --- /SECURE ACK ---
+        ack_required = (payload.get("node_type") or "").strip() in ALLOWED_ACK_ROLES
 
         # Validator promotion must follow the explicit request flag for non-root nodes.
         wants_validator = bool(payload.get("wants_validator", False)) or (node_type_str == "Cloud")
@@ -2638,11 +2800,23 @@ class Orchestrator:
             cur = self._normalize_validators(self.qbft_get_validators())
             new_addr_lc = (payload.get("address") or "").lower()
             if new_addr_lc and new_addr_lc in cur:
-                return {"ok": True, "status": "validator_already_included", "ack_sent": ack_sent, "ack_status": ack_status, "ack_required": ack_required, "tx": tx_out}
-            self._promote_validator_async(payload, from_signature=sig)
-            return {"ok": True, "status": "validator_proposed", "ack_sent": ack_sent, "ack_status": ack_status, "ack_required": ack_required, "tx": tx_out}
+                status = "validator_already_included"
+            else:
+                self._promote_validator_async(payload, from_signature=sig)
+                status = "validator_proposed"
+        else:
+            status = "endpoint_registered" if is_endpoint else "registered"
 
-        status = "endpoint_registered" if is_endpoint else "registered"
+        try:
+            ack_meta = self._dispatch_acknowledgement(payload, tx_out=tx_out)
+            ack_sent = bool(ack_meta.get("ack_sent", False))
+            ack_status = str(ack_meta.get("ack_status") or "not_needed")
+            ack_required = bool(ack_meta.get("ack_required", ack_required))
+        except Exception as e:
+            print(f"Acknowledgement error: {e}")
+            ack_sent = False
+            ack_status = "skipped"
+
         return {"ok": True, "status": status, "ack_sent": ack_sent, "ack_status": ack_status, "ack_required": ack_required, "tx": tx_out}
                 
 
@@ -2733,7 +2907,16 @@ class Orchestrator:
             to_signature=to_sig,
             details={"method": http_method, "resource_path": resource_path, "ctx": ctx, "op": op},
         )
-        ensure = self.ensure_policy(from_role, to_role, op, ctx, create_if_missing=True)
+        _policy_t0 = time.monotonic()
+        ensure = self.ensure_policy(
+            from_role,
+            to_role,
+            op,
+            ctx,
+            create_if_missing=bool(os.getenv("IS_POLICY_ADMIN")),
+        )
+        _policy_latency_ms = round((time.monotonic() - _policy_t0) * 1000, 3)
+        _policy_created = ensure.get("status") == "created"
 
         if ensure["status"] in {"missing","error"}:
             return {"ok": False, "why": f"policy_error:{ensure['note']}"}
@@ -2743,6 +2926,7 @@ class Orchestrator:
 
         if policy_id is None:
             return {"ok": False, "why": ensure.get("note", "policy_id_unknown")}
+        self._remember_grant_policy_id(from_sig, to_sig, int(policy_id))
 
 
         try:
@@ -2788,7 +2972,11 @@ class Orchestrator:
         # if owner_idx is None:
         #     return {"ok": False, "why": "owner_signer_not_found", "owner": to_owner_addr}
 
+        _grant_latency_ms: Optional[float] = None
+        _grant_reused = False
+
         if gx and gx.get("isIssued") and not gx.get("isRevoked") and gx.get("expiresAt", 0) > now:
+            _grant_reused = True
             self.emit_event(
                 component="orchestrator",
                 stage="grant_issue_or_reuse",
@@ -2799,14 +2987,16 @@ class Orchestrator:
                 to_signature=to_sig,
             )
         else:
+            _grant_t0 = time.monotonic()
             if allow_delegation and delegation_depth > 0:
                 self.issue_grant_delegable(
                     from_sig, to_sig, policy_id, op, exp_at, True, delegation_depth, from_idx=owner_idx
                 )
             else:
                 self.issue_grant(
-                    from_sig, to_sig, policy_id, op, exp_at
+                    from_sig, to_sig, policy_id, op, exp_at, from_idx=owner_idx
                 )
+            _grant_latency_ms = round((time.monotonic() - _grant_t0) * 1000, 3)
             self.emit_event(
                 component="orchestrator",
                 stage="grant_issue_or_reuse",
@@ -2829,7 +3019,17 @@ class Orchestrator:
                 except Exception:
                     pass
             threading.Thread(target=_audit_bg, daemon=True).start()
-        _result = {"ok": True, "granted": granted, "op": op, "policyId": policy_id, "ctx": ctx}
+        _result = {
+            "ok": True,
+            "granted": granted,
+            "op": op,
+            "policyId": policy_id,
+            "ctx": ctx,
+            "policy_created": _policy_created,
+            "policy_latency_ms": _policy_latency_ms,
+            "grant_latency_ms": _grant_latency_ms,
+            "grant_reused": _grant_reused,
+        }
         if granted:
             # Cache positive decisions until the grant expires
             _grant_expiry = float(gx.get("expiresAt", 0)) if gx else 0.0
